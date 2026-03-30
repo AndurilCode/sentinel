@@ -187,7 +187,9 @@ def _find_log_file():
                     log_file = cfg.get("log_file")
                     if log_file:
                         if not os.path.isabs(log_file):
-                            log_file = os.path.join(config_dir, log_file)
+                            # Relative to repo root (parent of .claude/)
+                            repo_root = os.path.dirname(os.path.dirname(config_dir))
+                            log_file = os.path.join(repo_root, log_file)
                         return log_file
             return None
         parent = os.path.dirname(cwd)
