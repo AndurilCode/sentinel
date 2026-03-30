@@ -234,6 +234,71 @@ def normalize_input(data: dict) -> tuple[dict, str]:
     return data, "unknown"
 
 
+# ── Content sampling ───────────────────────────────────────────────
+
+# Patterns that hint at secrets, credentials, or sensitive content.
+# Used to find suspicious regions in content that falls outside the
+# head/tail window, so the LLM can evaluate them.
+_SUSPICIOUS_RE = re.compile(
+    r"(?i)"
+    r"(?:api[_-]?key|secret[_-]?key|password|passwd|token|credential"
+    r"|auth[_-]?token|access[_-]?key|private[_-]?key|client[_-]?secret"
+    r"|connection[_-]?string|bearer)\s*[:=]"
+    r"|['\"][A-Za-z0-9+/]{40,}['\"]"          # long base64-ish strings
+    r"|sk-[a-zA-Z0-9]{20,}"                    # OpenAI-style keys
+    r"|ghp_[a-zA-Z0-9]{36}"                    # GitHub PATs
+    r"|AKIA[0-9A-Z]{16}"                       # AWS access key IDs
+)
+
+
+def _smart_truncate(content: str, max_chars: int) -> str:
+    """Sample content intelligently instead of a blind prefix truncation.
+
+    Strategy:
+    - If content fits in max_chars, return it as-is.
+    - Otherwise, allocate budget: 60% head, 25% tail, 15% suspicious
+      regions found via regex in the middle.
+    - This ensures secrets/credentials that appear later in a file are
+      still visible to the evaluating LLM.
+    """
+    if len(content) <= max_chars:
+        return content
+
+    head_budget = int(max_chars * 0.60)
+    tail_budget = int(max_chars * 0.25)
+    mid_budget  = max_chars - head_budget - tail_budget
+
+    head = content[:head_budget]
+    tail = content[-tail_budget:]
+
+    # Scan the middle region for suspicious patterns
+    middle = content[head_budget:-tail_budget] if tail_budget else content[head_budget:]
+    mid_snippet = ""
+    if mid_budget > 0 and middle:
+        hits = list(_SUSPICIOUS_RE.finditer(middle))
+        if hits:
+            # Collect context around each hit, up to mid_budget
+            fragments = []
+            remaining = mid_budget
+            for m in hits:
+                if remaining <= 0:
+                    break
+                # 40 chars before match, match itself, 80 chars after
+                start = max(0, m.start() - 40)
+                end = min(len(middle), m.end() + 80)
+                frag = middle[start:end]
+                if len(frag) > remaining:
+                    frag = frag[:remaining]
+                fragments.append(frag)
+                remaining -= len(frag) + 5  # 5 for separator
+            mid_snippet = " ... ".join(fragments)
+
+    if mid_snippet:
+        return f"{head}\n[... middle content, suspicious regions:]\n{mid_snippet}\n[... end of file:]\n{tail}"
+    else:
+        return f"{head}\n[... {len(content) - head_budget - tail_budget} chars omitted ...]\n{tail}"
+
+
 # ── Event parsing ───────────────────────────────────────────────────
 
 def _relativize(path: str) -> str:
@@ -281,10 +346,12 @@ def parse_event(data: dict, config: Optional[dict] = None) -> dict:
         # Relativize absolute paths so scope globs like "src/**" work
         fp_rel = _relativize(fp)
         content = inp.get("content", inp.get("new_string", ""))
+        max_chars = cfg.get("content_max_chars", DEFAULTS["content_max_chars"])
+        snippet = _smart_truncate(content, max_chars)
         ev["match_targets"] = [fp_rel]
         ev["template_vars"] = {
             "file_path":      fp_rel,
-            "content_snippet": content[:cfg.get("content_max_chars", DEFAULTS["content_max_chars"])],
+            "content_snippet": snippet,
             "content_length":  str(len(content)),
             "action_summary":  f"Write {len(content)} chars to {fp}",
         }

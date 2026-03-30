@@ -35,6 +35,76 @@ def load_entries(path):
     return entries
 
 
+def _parse_ts(ts_str):
+    """Parse ISO timestamp to epoch seconds (best-effort)."""
+    from datetime import datetime, timezone
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ",
+                "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            dt = datetime.strptime(ts_str, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except ValueError:
+            continue
+    return 0.0
+
+
+# Max seconds between a block and a retry to the same target for it
+# to count as a "contested" block (likely false positive).
+CONTESTED_WINDOW_S = 120
+
+
+def _detect_contested(evals):
+    """Detect blocks that were likely overridden by the developer.
+
+    A block is "contested" when the same rule+target pair appears as
+    blocked, and then the same target is written to again within
+    CONTESTED_WINDOW_S seconds. This means the developer saw the block
+    and told the agent to proceed anyway — a likely false positive.
+
+    Returns:
+      contested_by_rule: {rule_id: [target, ...]}
+      contested_targets: {(rule_id, target): count}
+    """
+    # Build a timeline of blocks: [(timestamp, rule_id, target), ...]
+    blocks = []
+    for e in evals:
+        if e.get("blocked"):
+            ts = _parse_ts(e.get("ts", ""))
+            target = e.get("target", "")
+            rule_id = e.get("rule_id", "")
+            if ts and target:
+                blocks.append((ts, rule_id, target))
+
+    # Build a set of all write timestamps per target (any eval = the
+    # agent attempted to write to this target)
+    target_writes = defaultdict(list)
+    for e in evals:
+        ts = _parse_ts(e.get("ts", ""))
+        target = e.get("target", "")
+        if ts and target:
+            target_writes[target].append(ts)
+
+    # For each target, sort timestamps for binary search
+    for t in target_writes:
+        target_writes[t].sort()
+
+    contested_by_rule = defaultdict(list)
+    contested_targets = defaultdict(int)
+
+    for block_ts, rule_id, target in blocks:
+        writes = target_writes.get(target, [])
+        # Look for a write to the same target within the window AFTER the block
+        for w_ts in writes:
+            if block_ts < w_ts <= block_ts + CONTESTED_WINDOW_S:
+                contested_by_rule[rule_id].append(target)
+                contested_targets[(rule_id, target)] += 1
+                break  # count once per block event
+
+    return contested_by_rule, contested_targets
+
+
 def compute_stats(entries):
     evals = [e for e in entries if e.get("level") == "eval"]
     skipped = [e for e in entries if e.get("level") == "skipped"]
@@ -44,6 +114,7 @@ def compute_stats(entries):
         "evals": 0, "violations": 0, "blocks": 0, "warns": 0,
         "skipped": 0, "total_ms": 0, "max_ms": 0,
         "confidences": [], "severity": "",
+        "contested": 0,
     })
 
     for e in evals:
@@ -66,6 +137,11 @@ def compute_stats(entries):
     for e in skipped:
         rid = e.get("rule_id", "unknown")
         rules[rid]["skipped"] += 1
+
+    # Detect contested blocks (likely false positives)
+    contested_by_rule, contested_targets = _detect_contested(evals)
+    for rid, targets in contested_by_rule.items():
+        rules[rid]["contested"] += len(targets)
 
     # Per-target stats (files/commands that triggered the most evaluations)
     targets = defaultdict(lambda: {"evals": 0, "blocks": 0, "violations": 0})
@@ -99,6 +175,7 @@ def compute_stats(entries):
         },
         "rules": rules,
         "targets": targets,
+        "contested_targets": contested_targets,
     }
 
 
@@ -144,9 +221,12 @@ def print_report(stats):
                     if r["confidences"] else 0)
         print()
         print(f"  {rid}  [{r['severity']}]")
+        contested = r.get("contested", 0)
+        contested_str = f"  contested: {contested}" if contested else ""
         print(f"    evals: {r['evals']}  violations: {r['violations']} "
               f"({viol_rate:.0f}%)  blocked: {r['blocks']}  "
-              f"warned: {r['warns']}  skipped: {r['skipped']}")
+              f"warned: {r['warns']}  skipped: {r['skipped']}"
+              f"{contested_str}")
         print(f"    latency: avg {avg_ms}ms  max {r['max_ms']}ms  "
               f"confidence: avg {avg_conf:.2f}")
         print(f"    {fmt_bar(r['violations'], r['evals'])} "
@@ -162,6 +242,58 @@ def print_report(stats):
     for target, t in sorted_targets:
         print(f"  {t['evals']:>4} evals  {t['violations']:>3} violations  "
               f"{t['blocks']:>3} blocked  {target}")
+
+    # Rule health — flag noisy rules and suggest fixes
+    print()
+    print("───────────────────────────────────────────────────────")
+    print("  RULE HEALTH")
+    print("───────────────────────────────────────────────────────")
+
+    issues = []
+    for rid, r in sorted(stats["rules"].items()):
+        if r["blocks"] == 0:
+            continue
+        override_rate = r["contested"] / r["blocks"] if r["blocks"] else 0
+        if override_rate >= 0.3:
+            issues.append(("noisy", rid, r, override_rate))
+        elif r["skipped"] > r["evals"] * 0.3 and r["evals"] > 0:
+            issues.append(("flaky", rid, r, 0))
+        elif r["max_ms"] > 3000:
+            issues.append(("slow", rid, r, 0))
+
+    if not issues:
+        print()
+        print("  All rules healthy. No action needed.")
+    else:
+        for kind, rid, r, rate in issues:
+            print()
+            if kind == "noisy":
+                print(f"  !! {rid}  — likely false positives")
+                print(f"     {r['contested']}/{r['blocks']} blocks contested "
+                      f"(override rate: {rate:.0%})")
+                # Find the most-contested targets for this rule
+                rule_targets = {
+                    t: c for (rule_id, t), c
+                    in stats.get("contested_targets", {}).items()
+                    if rule_id == rid
+                }
+                if rule_targets:
+                    top = sorted(rule_targets.items(),
+                                 key=lambda x: x[1], reverse=True)[:3]
+                    print("     Repeatedly overridden on:")
+                    for t, c in top:
+                        print(f"       {c}x  {t}")
+                    print("     Suggested fix: add these to the rule's "
+                          "exclude list, or switch to severity: warn")
+            elif kind == "flaky":
+                print(f"  ?? {rid}  — unreliable "
+                      f"({r['skipped']} skipped / {r['evals']} evals)")
+                print("     Suggested fix: check Ollama stability or "
+                      "increase timeout_ms for this rule")
+            elif kind == "slow":
+                print(f"  ~~ {rid}  — slow (max {r['max_ms']}ms)")
+                print("     Suggested fix: use a smaller model or "
+                      "narrow the scope to reduce evaluations")
     print()
 
 
@@ -226,9 +358,13 @@ def main():
     stats = compute_stats(entries)
 
     if as_json:
-        # Make it JSON-serializable (drop raw lists)
+        # Make it JSON-serializable (drop raw lists, convert tuple keys)
         for r in stats["rules"].values():
             del r["confidences"]
+        stats["contested_targets"] = {
+            f"{rule_id}:{target}": count
+            for (rule_id, target), count in stats.get("contested_targets", {}).items()
+        }
         print(json.dumps(stats, indent=2))
     else:
         print_report(stats)

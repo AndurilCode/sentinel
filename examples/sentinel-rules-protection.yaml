@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: sentinel-rules-protection
+# Trigger: file_write
+# Prevents the agent from modifying Sentinel rule files.
+#
+# Without this rule, an agent could weaken or delete its own
+# guardrails before performing a prohibited action.
+#
+# Note: if you use /sentinel-rule to author rules, add your
+# sentinel rules path to the exclude list below so the skill
+# can still write rule files on your behalf.
+# ─────────────────────────────────────────────────────────────
+
+id: sentinel-rules-protection
+trigger: file_write
+severity: block
+
+scope:
+  - ".claude/sentinel/rules/**"
+
+exclude: []
+
+prompt: |
+  A coding agent is about to write to:
+  FILE: {{file_path}}
+
+  RULE: Sentinel rule files (.claude/sentinel/rules/) must not be
+  modified by the agent. These files define the safety guardrails
+  and must only be changed by a human or an explicit rule-authoring
+  workflow.
+
+  Is this file inside the sentinel rules directory?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
