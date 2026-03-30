@@ -192,6 +192,15 @@ def parse_event(data: dict) -> dict:
 
 # ── Rule matching ───────────────────────────────────────────────────
 
+def _glob_match(target: str, pattern: str) -> bool:
+    """fnmatch with ** support: strip leading **/ and retry on relative paths."""
+    if fnmatch.fnmatch(target, pattern):
+        return True
+    if pattern.startswith("**/"):
+        return fnmatch.fnmatch(target, pattern[3:])
+    return False
+
+
 def rule_matches(rule: dict, event: dict) -> bool:
     """Check trigger type + scope glob against event targets."""
     # 1. Trigger filter
@@ -206,9 +215,9 @@ def rule_matches(rule: dict, event: dict) -> bool:
 
     for target in targets:
         # Check excludes first
-        if any(fnmatch.fnmatch(target, ex) for ex in excludes):
+        if any(_glob_match(target, ex) for ex in excludes):
             continue
-        if any(fnmatch.fnmatch(target, pat) for pat in scopes):
+        if any(_glob_match(target, pat) for pat in scopes):
             return True
 
     return False
