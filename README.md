@@ -40,7 +40,7 @@ Sentinel runs as a `PreToolUse` hook. On every agent action:
 
 1. Matches the action against rule scope globs (no LLM call if nothing matches)
 2. Evaluates matching rules in parallel — one Ollama call per rule, binary classification
-3. Blocks on violations (exit 2), silent on pass (exit 0)
+3. Blocks on violations (outputs `permissionDecision: deny`), silent on pass
 
 Rules live in your repo at `.claude/sentinel/rules/*.yaml`. The plugin evaluator lives outside your repo.
 
