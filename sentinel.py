@@ -98,7 +98,7 @@ def load_rules(rules_dir: str) -> list[dict]:
             rule.setdefault("scope", ["**"])
             rule.setdefault("exclude", [])
             rules.append(rule)
-        except Exception as e:
+        except Exception:
             pass  # silently skip malformed rule files
     return rules
 
