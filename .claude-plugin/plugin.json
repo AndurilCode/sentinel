@@ -1,0 +1,11 @@
+{
+  "name": "sentinel",
+  "version": "1.0.0",
+  "description": "Local LLM rule evaluator — gates agent actions against repo-defined rules using Ollama",
+  "author": {
+    "name": "gpavanello"
+  },
+  "repository": "https://github.com/gpavanello/sentinel",
+  "license": "MIT",
+  "keywords": ["hooks", "safety", "ollama", "rules", "guardrails"]
+}
