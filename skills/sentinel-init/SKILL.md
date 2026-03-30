@@ -1,18 +1,50 @@
 ---
 name: sentinel-init
-description: Scaffold Sentinel config and rules directory in the current repository
+description: Scaffold Sentinel config and rules directory in the current repository, installing prerequisites if needed
 user-invocable: true
 ---
 
 # Sentinel Init
 
-Scaffold the Sentinel configuration directory in the current repository.
+Set up Sentinel in the current repository. Checks prerequisites, installs what's missing, and scaffolds the config directory.
 
 ## What to do
 
-1. Check if `.claude/sentinel/` already exists in the current working directory. If it does, tell the user it's already initialized and stop.
+Run these steps in order. Stop and report if anything fails.
 
-2. Create `.claude/sentinel/config.yaml` with this content:
+### Step 1: Check if already initialized
+
+Check if `.claude/sentinel/` already exists in the current working directory. If it does, tell the user it's already initialized and stop.
+
+### Step 2: Check and install Ollama
+
+Run `which ollama` to check if Ollama is installed.
+
+**If not installed**, detect the platform and install:
+- **macOS**: `brew install ollama` (if brew is available), otherwise tell the user to download from https://ollama.com
+- **Linux**: `curl -fsSL https://ollama.com/install.sh | sh`
+
+### Step 3: Check if Ollama is running
+
+Run `curl -s http://localhost:11434/api/tags` to check if Ollama is serving.
+
+**If not responding**, start it:
+- Run `ollama serve` in the background
+- Wait a few seconds, then verify it's responding
+
+If it still doesn't respond, tell the user to start Ollama manually and re-run `/sentinel-init`.
+
+### Step 4: Check and pull the default model
+
+Check if `qwen3.5:4b` is available by inspecting the response from `/api/tags`.
+
+**If not available**, pull it:
+- Run `ollama pull qwen3.5:4b`
+- This downloads ~3 GB. Tell the user it's pulling and may take a few minutes.
+
+### Step 5: Scaffold the config directory
+
+Create `.claude/sentinel/config.yaml` with this content:
 
 ```yaml
 # ─────────────────────────────────────────────────────────────
@@ -47,8 +79,8 @@ confidence_threshold: 0.7
 # Set to match your available inference bandwidth.
 max_parallel: 4
 
-# Use /think mode (slower, more accurate) or /no_think (fast gate).
-# For hook evaluation, /no_think is almost always sufficient.
+# Use thinking mode (slower, more accurate) or disable (fast gate).
+# For hook evaluation, disabling thinking is almost always sufficient.
 think: false
 
 # Behavior when Ollama is unreachable or returns an error.
@@ -71,10 +103,24 @@ log_file: ".claude/sentinel/sentinel.log"
 rules_dir: "rules"
 ```
 
-3. Create `.claude/sentinel/rules/.gitkeep` (empty file) so the rules directory is tracked by git.
+### Step 6: Create the rules directory
 
-4. Tell the user:
+Create `.claude/sentinel/rules/.gitkeep` (empty file) so the rules directory is tracked by git.
 
-> Sentinel initialized at `.claude/sentinel/`. Use `/sentinel-rule` to create your first rule.
+### Step 7: Verify end-to-end
+
+Run a quick smoke test to confirm everything works:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' | SENTINEL_CONFIG_DIR=.claude/sentinel python3 ${CLAUDE_PLUGIN_ROOT}/sentinel.py
+```
+
+Expected: exit 0, no output (no rules to match yet, so it passes through).
+
+### Step 8: Done
+
+Tell the user:
+
+> Sentinel initialized at `.claude/sentinel/`. Ollama is running with `qwen3.5:4b`. Use `/sentinel-rule` to create your first rule.
 
 Do NOT copy example rules into the repo. The rules directory starts empty.
