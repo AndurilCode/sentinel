@@ -17,6 +17,7 @@ import sys
 import os
 import json
 import fnmatch
+import re
 import time
 import urllib.request
 import urllib.error
@@ -57,6 +58,69 @@ SYSTEM_PROMPT = (
     '{"violation": true|false, "confidence": 0.0-1.0, "reason": "one line"}'
 )
 
+# ── Rule validation ────────────────────────────────────────────────
+
+VALID_TRIGGERS = {"file_write", "bash", "mcp", "any"}
+VALID_SEVERITIES = {"block", "warn"}
+
+TEMPLATE_VARS_BY_TRIGGER = {
+    "file_write": {"file_path", "content_snippet", "content_length", "action_summary", "tool_name", "trigger"},
+    "bash":       {"command", "action_summary", "tool_name", "trigger"},
+    "mcp":        {"server_name", "mcp_tool", "mcp_arguments", "action_summary", "tool_name", "trigger"},
+}
+ALL_TEMPLATE_VARS = set().union(*TEMPLATE_VARS_BY_TRIGGER.values())
+
+
+def validate_rule(rule: dict, filepath: str) -> list[str]:
+    """Validate a rule dict and return a list of warning messages (empty if valid)."""
+    warnings = []
+    fname = os.path.basename(filepath)
+
+    # 1. Required: prompt
+    if "prompt" not in rule:
+        warnings.append(f"{fname}: missing required 'prompt' field")
+
+    # 2. Trigger type
+    trigger = rule.get("trigger")
+    if trigger is not None and trigger not in VALID_TRIGGERS:
+        warnings.append(f"{fname}: unknown trigger '{trigger}' (valid: {', '.join(sorted(VALID_TRIGGERS))})")
+
+    # 3. Severity
+    severity = rule.get("severity")
+    if severity is not None and severity not in VALID_SEVERITIES:
+        warnings.append(f"{fname}: unknown severity '{severity}' (valid: {', '.join(sorted(VALID_SEVERITIES))})")
+
+    # 4. Scope must be a list
+    scope = rule.get("scope")
+    if scope is not None and not isinstance(scope, list):
+        warnings.append(f"{fname}: 'scope' must be a list of glob patterns, got {type(scope).__name__}")
+
+    # 5. Exclude must be a list
+    exclude = rule.get("exclude")
+    if exclude is not None and not isinstance(exclude, list):
+        warnings.append(f"{fname}: 'exclude' must be a list of glob patterns, got {type(exclude).__name__}")
+
+    # 6. Template variable typos
+    prompt = rule.get("prompt", "")
+    if prompt:
+        used_vars = set(re.findall(r"\{\{(\w+)\}\}", prompt))
+        trigger_val = rule.get("trigger", "any")
+        if trigger_val == "any" or trigger_val not in TEMPLATE_VARS_BY_TRIGGER:
+            valid_vars = ALL_TEMPLATE_VARS
+        else:
+            valid_vars = TEMPLATE_VARS_BY_TRIGGER[trigger_val]
+        unknown = used_vars - valid_vars
+        if unknown:
+            warnings.append(f"{fname}: unknown template variable(s): {', '.join(sorted(unknown))}")
+
+    # 7. ID format
+    rule_id = rule.get("id")
+    if rule_id is not None and (re.search(r"[A-Z\s]", rule_id)):
+        warnings.append(f"{fname}: id '{rule_id}' should be kebab-case (no spaces or uppercase)")
+
+    return warnings
+
+
 # ── Loaders ─────────────────────────────────────────────────────────
 
 def _load_file(path: str) -> dict:
@@ -93,6 +157,9 @@ def load_rules(rules_dir: str) -> list[dict]:
         path = os.path.join(rules_dir, entry)
         try:
             rule = _load_file(path)
+            # Validate before applying defaults so we catch user mistakes
+            for w in validate_rule(rule, path):
+                sys.stderr.write(f"SENTINEL: {w}\n")
             rule.setdefault("id", Path(entry).stem)
             rule.setdefault("severity", "block")   # block | warn
             rule.setdefault("trigger", "any")       # file_write | bash | mcp | any
@@ -100,7 +167,7 @@ def load_rules(rules_dir: str) -> list[dict]:
             rule.setdefault("exclude", [])
             rules.append(rule)
         except Exception:
-            pass  # silently skip malformed rule files
+            sys.stderr.write(f"SENTINEL: {entry}: failed to parse (skipped)\n")
     return rules
 
 # ── Event parsing ───────────────────────────────────────────────────
