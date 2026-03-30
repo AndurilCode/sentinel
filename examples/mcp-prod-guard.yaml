@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: mcp-prod-guard
+# Trigger: mcp
+# Blocks write operations to production databases via MCP.
+# ─────────────────────────────────────────────────────────────
+
+id: mcp-prod-guard
+trigger: mcp
+severity: block
+
+# Scope matches against "server_name:tool_name", "tool_name", or "server_name".
+# All three forms are checked, so you can filter by server, tool, or both.
+scope:
+  - "postgres-prod:*"
+  - "*:sql_execute"
+  - "*:database_write"
+  - "*:table_drop"
+  - "*:run_migration"
+
+# Safe read-only operations
+exclude:
+  - "*:sql_query"
+  - "*:database_read"
+  - "*:list_tables"
+  - "postgres-dev:*"
+  - "postgres-test:*"
+
+prompt: |
+  A coding agent is calling an MCP tool:
+  SERVER: {{server_name}}
+  TOOL: {{mcp_tool}}
+  ARGUMENTS: {{mcp_arguments}}
+
+  RULE: Write operations to production databases via MCP are
+  prohibited. This includes sql_execute, database_write,
+  table_drop, and run_migration on any production server.
+  Read-only queries and operations on dev/test servers are allowed.
+
+  Is this a write operation targeting a production database?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: api-schema-migration
+# Trigger: file_write
+# Ensures API schema changes are accompanied by migrations.
+# ─────────────────────────────────────────────────────────────
+
+id: api-schema-migration
+trigger: file_write
+severity: warn
+
+scope:
+  - "**/openapi.yaml"
+  - "**/openapi.json"
+  - "**/api-schema.*"
+  - "**/graphql/schema.*"
+
+prompt: |
+  A coding agent is modifying an API schema file:
+  FILE: {{file_path}}
+  ACTION: {{action_summary}}
+
+  CONTENT PREVIEW:
+  {{content_snippet}}
+
+  RULE: Any change to API schema files should be accompanied by
+  a database migration file in the migrations/ directory. This is
+  a warning — the agent should verify a migration exists or create one.
+
+  Does this look like a schema change that would need a migration?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: billing-protection
+# Trigger: file_write
+# Guards the core billing module from unreviewed agent edits.
+# ─────────────────────────────────────────────────────────────
+
+id: billing-protection
+
+# Which hook event types activate this rule.
+#   file_write  → Write, Edit, MultiEdit, CreateFile
+#   bash        → Bash
+#   mcp         → McpToolUse
+#   any         → all of the above
+trigger: file_write
+
+# Glob patterns matched against the file path.
+# Rule fires only if at least one scope glob matches.
+scope:
+  - "src/core/billing/**"
+  - "src/core/payments/**"
+  - "**/billing/*.ts"
+
+# Glob patterns that exempt files even if scope matches.
+exclude:
+  - "**/*.test.ts"
+  - "**/*.spec.ts"
+  - "**/__mocks__/**"
+
+# block → exit 2, action is prevented
+# warn  → exit 0 with warning in stdout (Claude sees it but proceeds)
+severity: block
+
+# Optional per-rule model override.
+# Uncomment to use a more capable model for high-stakes rules.
+# model: "qwen3.5:9b"
+
+# Evaluation prompt. Available template variables:
+#   {{file_path}}        — target file path
+#   {{content_snippet}}  — first N chars of file content (see content_max_chars)
+#   {{content_length}}   — total content length in chars
+#   {{action_summary}}   — human-readable action description
+#   {{command}}           — bash command (bash trigger only)
+#   {{server_name}}       — MCP server name (mcp trigger only)
+#   {{mcp_tool}}          — MCP tool name (mcp trigger only)
+#   {{mcp_arguments}}     — MCP arguments JSON snippet (mcp trigger only)
+#   {{tool_name}}         — raw Claude Code tool name
+#   {{trigger}}           — normalized trigger type
+prompt: |
+  A coding agent is about to write to this file:
+  FILE: {{file_path}}
+  ACTION: {{action_summary}}
+
+  RULE: The billing and payments modules (src/core/billing/,
+  src/core/payments/) are protected. Direct agent modifications
+  are not allowed without explicit human approval.
+
+  Does this action write to a protected billing/payments file?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
