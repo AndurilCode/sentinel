@@ -501,17 +501,27 @@ def _log(config, rule, event, violation, confidence, reason, elapsed_ms,
     log_path = config.get("log_file")
     if not log_path:
         return
+    tvars = event.get("template_vars", {})
+    severity = rule.get("severity", "block")
+    threshold = config.get("confidence_threshold", DEFAULTS["confidence_threshold"])
+    blocked = violation and confidence >= threshold and severity == "block"
     entry = {
         "ts":         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "level":      level,
         "rule_id":    rule["id"],
+        "severity":   severity,
+        "tool":       event.get("raw_tool", ""),
         "trigger":    event["trigger"],
         "target":     (event.get("match_targets") or [""])[0][:200],
+        "action":     tvars.get("action_summary", "")[:200],
         "violation":  violation,
         "confidence": confidence,
+        "threshold":  threshold,
+        "blocked":    blocked,
         "reason":     reason,
         "elapsed_ms": elapsed_ms,
         "model":      rule.get("model", config["model"]),
+        "content":    tvars.get("content_snippet", tvars.get("command", ""))[:400],
     }
     try:
         with open(log_path, "a") as f:
