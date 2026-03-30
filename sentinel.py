@@ -8,8 +8,7 @@ matching rules in parallel against a local Ollama model, and blocks
 only on violations. Silent when all rules pass.
 
 Exit codes:
-  0  — allow (no violations, or warnings only)
-  2  — block (at least one blocking violation)
+  0  — always (hook output controls blocking via permissionDecision JSON)
 
 Dependencies: PyYAML (pip install pyyaml)
 """
@@ -113,6 +112,17 @@ TOOL_TRIGGER_MAP = {
 }
 
 
+def _relativize(path: str) -> str:
+    """Strip cwd prefix from absolute paths so relative scope globs match."""
+    if not os.path.isabs(path):
+        return path
+    try:
+        return os.path.relpath(path, os.getcwd())
+    except ValueError:
+        # Windows: relpath fails across drives
+        return path
+
+
 def parse_event(data: dict) -> dict:
     """Normalize Claude Code hook payload into evaluation context."""
     tool = data.get("tool_name", "")
@@ -134,10 +144,12 @@ def parse_event(data: dict) -> dict:
 
     if ev["trigger"] == "file_write":
         fp = inp.get("file_path", "")
+        # Relativize absolute paths so scope globs like "src/**" work
+        fp_rel = _relativize(fp)
         content = inp.get("content", inp.get("new_string", ""))
-        ev["match_targets"] = [fp]
+        ev["match_targets"] = [fp_rel]
         ev["template_vars"] = {
-            "file_path":      fp,
+            "file_path":      fp_rel,
             "content_snippet": content[:DEFAULTS["content_max_chars"]],
             "content_length":  str(len(content)),
             "action_summary":  f"Write {len(content)} chars to {fp}",
@@ -423,8 +435,14 @@ def main():
         if config.get("fail_open", True):
             sys.exit(0)  # Ollama offline → silent pass-through
         else:
-            print("SENTINEL: Ollama is not reachable, blocking action (fail_open: false)", file=sys.stderr)
-            sys.exit(2)
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "SENTINEL: Ollama is not reachable (fail_open: false)",
+                }
+            }))
+            sys.exit(0)
 
     # Read hook event
     try:
@@ -458,9 +476,15 @@ def main():
     blockers = any(v["severity"] == "block" for v in violations)
 
     if blockers:
-        # Block: stderr message is fed back to Claude as the reason
-        print(report, file=sys.stderr)
-        sys.exit(2)
+        # Block: output structured JSON to stdout for Claude Code to deny
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": report,
+            }
+        }))
+        sys.exit(0)
     else:
         # Warnings only: structured JSON so Claude Code injects into context
         print(json.dumps({
