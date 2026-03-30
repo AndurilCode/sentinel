@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: sql-injection
+# Trigger: file_write
+# Detects string concatenation/interpolation in SQL queries.
+# ─────────────────────────────────────────────────────────────
+
+id: sql-injection
+trigger: file_write
+severity: block
+
+scope:
+  - "**/*.ts"
+  - "**/*.js"
+  - "**/*.py"
+  - "**/*.go"
+  - "**/*.java"
+  - "**/*.rb"
+
+exclude:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test_*.py"
+  - "**/migrations/**"
+  - "**/fixtures/**"
+  - "**/seeds/**"
+  - "**/node_modules/**"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: SQL queries must use parameterized queries or prepared statements,
+  never string concatenation or template literal interpolation to inject
+  values. Patterns like `"SELECT * FROM " + table`, `f"WHERE id = {id}"`,
+  or `query(` + userInput + `)` are SQL injection vulnerabilities.
+  ORM query builders and parameterized placeholders ($1, ?, :name) are safe.
+
+  Does this code build SQL queries using string concatenation or interpolation?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

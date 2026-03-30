@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: unsafe-imports
+# Trigger: file_write
+# Detects imports of known-dangerous modules or patterns.
+# ─────────────────────────────────────────────────────────────
+
+id: unsafe-imports
+trigger: file_write
+severity: block
+
+scope:
+  - "**/*.ts"
+  - "**/*.js"
+  - "**/*.jsx"
+  - "**/*.tsx"
+  - "**/*.py"
+
+exclude:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test_*.py"
+  - "**/node_modules/**"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: Production code must not use dangerous patterns:
+  - Python: eval(), exec(), pickle.loads() on untrusted data,
+    subprocess with shell=True, __import__()
+  - JavaScript/TypeScript: eval(), Function() constructor,
+    dangerouslySetInnerHTML with dynamic content, document.write()
+  Legitimate uses in build scripts or tooling are acceptable.
+
+  Does this code use a dangerous import or execution pattern in production code?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: debug-statements
+# Trigger: file_write
+# Warns when debug/console statements are left in production code.
+# ─────────────────────────────────────────────────────────────
+
+id: debug-statements
+trigger: file_write
+severity: warn
+
+scope:
+  - "**/*.ts"
+  - "**/*.js"
+  - "**/*.jsx"
+  - "**/*.tsx"
+  - "**/*.py"
+  - "**/*.go"
+  - "**/*.java"
+
+exclude:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test_*.py"
+  - "**/scripts/**"
+  - "**/tools/**"
+  - "**/node_modules/**"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: Production source code should not contain debug statements:
+  console.log, console.debug, debugger, breakpoint(), pdb.set_trace(),
+  print() used for debugging (not logging frameworks), or TODO/FIXME
+  markers left alongside debug output. Structured logging via a logging
+  framework (logger.debug, log.Info) is acceptable.
+
+  Does this code contain debug statements that should be removed?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

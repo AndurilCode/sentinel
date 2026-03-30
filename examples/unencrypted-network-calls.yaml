@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: unencrypted-network-calls
+# Trigger: file_write
+# Warns when http:// URLs are used instead of https://.
+# ─────────────────────────────────────────────────────────────
+
+id: unencrypted-network-calls
+trigger: file_write
+severity: warn
+
+scope:
+  - "**/*.ts"
+  - "**/*.js"
+  - "**/*.py"
+  - "**/*.go"
+  - "**/*.java"
+  - "**/*.yaml"
+  - "**/*.yml"
+  - "**/*.json"
+
+exclude:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test_*.py"
+  - "**/node_modules/**"
+  - "**/package-lock.json"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: Network calls should use HTTPS, not plain HTTP. URLs with
+  http:// in API client configurations, fetch calls, or service
+  endpoints are a security concern. Exceptions: localhost/127.0.0.1
+  URLs, development-only configurations, and protocol-relative URLs
+  are acceptable.
+
+  Does this code contain http:// URLs that should be https://?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

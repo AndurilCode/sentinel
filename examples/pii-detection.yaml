@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: pii-detection
+# Trigger: file_write
+# Detects hardcoded PII (emails, phone numbers, SSNs, addresses).
+# ─────────────────────────────────────────────────────────────
+
+id: pii-detection
+trigger: file_write
+severity: block
+
+scope:
+  - "**/*.ts"
+  - "**/*.js"
+  - "**/*.py"
+  - "**/*.go"
+  - "**/*.java"
+  - "**/*.rs"
+  - "**/*.rb"
+
+exclude:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test_*.py"
+  - "**/__mocks__/**"
+  - "**/fixtures/**"
+  - "**/node_modules/**"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: Source code must not contain hardcoded personally identifiable
+  information (PII). This includes: real email addresses, phone numbers,
+  Social Security numbers, physical/mailing addresses, or full names
+  tied to personal data. Placeholder values ("user@example.com",
+  "555-0100", "Jane Doe") and test fixtures are acceptable.
+
+  Does this content contain real hardcoded PII?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

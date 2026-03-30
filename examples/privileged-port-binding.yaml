@@ -1,0 +1,34 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: privileged-port-binding
+# Trigger: bash
+# Warns when commands bind to privileged ports (below 1024).
+# ─────────────────────────────────────────────────────────────
+
+id: privileged-port-binding
+trigger: bash
+severity: warn
+
+scope:
+  - "*--port *"
+  - "*-p *:*"
+  - "*listen*"
+  - "*bind*"
+  - "*serve*"
+
+exclude:
+  - "*localhost:3000*"
+  - "*localhost:8080*"
+  - "*:8000*"
+  - "*:5000*"
+
+prompt: |
+  A coding agent is about to execute this bash command:
+  COMMAND: {{command}}
+
+  RULE: Commands should not bind to privileged ports (below 1024)
+  without explicit justification. Ports like 80, 443, or 25 require
+  elevated privileges and may conflict with system services.
+  Non-privileged ports (1024+) are acceptable.
+
+  Does this command attempt to bind to a port below 1024?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

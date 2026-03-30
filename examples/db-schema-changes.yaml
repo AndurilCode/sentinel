@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: db-schema-changes
+# Trigger: file_write
+# Warns when DDL statements lack a corresponding rollback.
+# ─────────────────────────────────────────────────────────────
+
+id: db-schema-changes
+trigger: file_write
+severity: warn
+
+scope:
+  - "**/migrations/**"
+  - "**/migrate/**"
+  - "**/*migration*"
+  - "**/*schema*"
+
+exclude:
+  - "**/*.test.*"
+  - "**/node_modules/**"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: Database migration files containing DDL statements (CREATE TABLE,
+  ALTER TABLE, DROP TABLE, ADD COLUMN, DROP COLUMN) should include a
+  rollback or down migration. A migration with destructive DDL (DROP,
+  removing columns) and no rollback strategy is especially risky.
+
+  Does this migration file contain DDL statements without a visible
+  rollback or down migration?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

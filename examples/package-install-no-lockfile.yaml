@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: package-install-no-lockfile
+# Trigger: bash
+# Warns on direct package installs that may bypass lockfiles.
+# ─────────────────────────────────────────────────────────────
+
+id: package-install-no-lockfile
+trigger: bash
+severity: warn
+
+scope:
+  - "npm install *"
+  - "npm i *"
+  - "pip install *"
+  - "yarn add *"
+  - "pnpm add *"
+  - "gem install *"
+  - "cargo add *"
+
+exclude:
+  - "*--save-dev*"
+  - "*--save-exact*"
+  - "*-r requirements*"
+  - "*from lockfile*"
+  - "npm install"
+  - "npm ci*"
+  - "yarn install*"
+  - "pnpm install*"
+
+prompt: |
+  A coding agent is about to execute this bash command:
+  COMMAND: {{command}}
+
+  RULE: Installing individual packages directly can introduce
+  unpinned dependencies. This command should be reviewed to ensure
+  the lockfile will be updated and the dependency version is appropriate.
+  Bulk installs from lockfiles (npm ci, pip install -r, yarn install)
+  are acceptable.
+
+  Is this a direct package install that may bypass lockfile discipline?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

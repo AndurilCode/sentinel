@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: license-headers
+# Trigger: file_write
+# Warns when new source files are missing a license/copyright header.
+# ─────────────────────────────────────────────────────────────
+
+id: license-headers
+trigger: file_write
+severity: warn
+
+scope:
+  - "**/*.ts"
+  - "**/*.js"
+  - "**/*.py"
+  - "**/*.go"
+  - "**/*.java"
+  - "**/*.rs"
+
+exclude:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test_*.py"
+  - "**/*.config.*"
+  - "**/*.d.ts"
+  - "**/node_modules/**"
+  - "**/generated/**"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: Source files must include a license or copyright header in the
+  first 10 lines. Acceptable forms: "Copyright", "License", "SPDX-License-Identifier",
+  or a comment block referencing the project's license. If the file
+  appears to be newly created (full content, not a patch) and lacks
+  any license header, this is a violation.
+
+  Is this a new file being written without a license/copyright header?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

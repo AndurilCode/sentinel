@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: test-quality
+# Trigger: file_write
+# Warns when test files lack assertions or are empty stubs.
+# ─────────────────────────────────────────────────────────────
+
+id: test-quality
+trigger: file_write
+severity: warn
+
+scope:
+  - "**/*.test.ts"
+  - "**/*.test.js"
+  - "**/*.spec.ts"
+  - "**/*.spec.js"
+  - "**/test_*.py"
+  - "**/*_test.go"
+  - "**/*_test.py"
+
+exclude:
+  - "**/node_modules/**"
+  - "**/__snapshots__/**"
+
+prompt: |
+  A coding agent is writing to:
+  FILE: {{file_path}}
+
+  CONTENT PREVIEW (first 800 chars):
+  {{content_snippet}}
+
+  RULE: Test files must contain meaningful assertions. A test that has
+  no assert/expect/should statements, only contains "todo" or "skip"
+  markers, or is an empty test body provides no value and creates
+  false confidence. Test stubs with placeholder comments are also
+  violations.
+
+  Does this test file lack meaningful assertions?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
