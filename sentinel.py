@@ -23,7 +23,6 @@ import fnmatch
 import re
 import time
 import urllib.request
-import urllib.error
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -302,7 +301,7 @@ def parse_event(data: dict, config: Optional[dict] = None) -> dict:
         # Parse server and tool using configurable separator
         remainder = tool[len(mcp_prefix):]
         parts = remainder.split(mcp_separator, 1)
-        server   = parts[0] if len(parts) > 0 else ""
+        server   = parts[0]
         mcp_tool = parts[1] if len(parts) > 1 else ""
         args     = json.dumps(inp)[:500]
         composite = f"{server}:{mcp_tool}" if server else mcp_tool
@@ -365,11 +364,6 @@ def render_prompt(rule: dict, event: dict, config: dict) -> str:
     result = template
     for key, val in event["template_vars"].items():
         result = result.replace("{{" + key + "}}", str(val))
-    # Truncate content if config overrides default
-    max_chars = config.get("content_max_chars", DEFAULTS["content_max_chars"])
-    if "{{content_snippet}}" in template:
-        content = event["template_vars"].get("content_snippet", "")[:max_chars]
-        result = result.replace("{{content_snippet}}", content)
     return result
 
 # ── Ollama evaluation ───────────────────────────────────────────────
@@ -453,8 +447,6 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
             }
         return None
 
-    except (urllib.error.URLError, ConnectionError) as e:
-        return _handle_offline(rule, e, config, t0, event)
     except Exception as e:
         return _handle_offline(rule, e, config, t0, event)
 
@@ -530,12 +522,6 @@ def _log(config, rule, event, violation, confidence, reason, elapsed_ms,
         pass
 
 
-def _err(msg):
-    """Log to JSONL if configured, otherwise discard. Never write to stderr
-    for non-violation messages — stderr output gets fed back to the agent."""
-    pass  # Errors are logged via _log(); _err is for debug only
-
-
 def _debug(msg, config):
     """Write debug info to the log file if configured, never to stderr."""
     log_path = config.get("log_file") if config else None
@@ -581,17 +567,12 @@ def format_decision(report: str, blockers: bool, agent_format: str) -> Optional[
     Copilot CLI: {"permissionDecision": "deny", "permissionDecisionReason": "..."}
     """
     if agent_format == "copilot":
-        if blockers:
-            return json.dumps({
-                "permissionDecision": "deny",
-                "permissionDecisionReason": report,
-            })
-        else:
-            # Copilot has no additionalContext equivalent — use allow + reason
-            return json.dumps({
-                "permissionDecision": "allow",
-                "permissionDecisionReason": report,
-            })
+        # Copilot has no additionalContext equivalent — use allow + reason
+        decision = "deny" if blockers else "allow"
+        return json.dumps({
+            "permissionDecision": decision,
+            "permissionDecisionReason": report,
+        })
 
     # Claude Code (default) and unknown formats
     if blockers:
@@ -602,13 +583,12 @@ def format_decision(report: str, blockers: bool, agent_format: str) -> Optional[
                 "permissionDecisionReason": report,
             }
         })
-    else:
-        return json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": report,
-            }
-        })
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": report,
+        }
+    })
 
 
 # ── Main ────────────────────────────────────────────────────────────
