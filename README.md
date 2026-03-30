@@ -1,6 +1,6 @@
 # Sentinel
 
-Local LLM rule evaluator for Claude Code hooks.
+Local LLM rule evaluator for coding agent hooks.
 Gates agent actions against repo-defined rules using Ollama. Silent when everything passes, blocks on violations.
 
 ## Quick start
@@ -63,6 +63,36 @@ prompt: |
 ```
 
 See `examples/` for more: file write guards, MCP production gates, secret detection.
+
+## Supported agents
+
+Sentinel recognizes tool names from multiple coding agents out of the box:
+
+| Agent | File write | Terminal | MCP format |
+|---|---|---|---|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | `Bash` | `mcp__server__tool` |
+| [GitHub Copilot](https://github.com/features/copilot) (VS Code) | `create_file`, `replace_string_in_file` | `run_in_terminal` | native tool names |
+| [Cursor](https://cursor.sh) | `edit_file` | `run_terminal_cmd` | `mcp_server_tool` |
+| [Windsurf](https://codeium.com/windsurf) | `write_to_file`, `edit_file` | `run_command` | native tool names |
+| [Cline](https://github.com/cline/cline) | `write_to_file`, `replace_in_file` | `execute_command` | `use_mcp_tool` wrapper |
+| [Amazon Q](https://aws.amazon.com/q/developer/) | `fs_write` | `execute_bash` | `@server/tool` |
+
+To add a custom agent or override mappings, set `tool_map` in your `config.yaml`:
+
+```yaml
+tool_map:
+  my_write_tool: file_write
+  my_shell_tool: bash
+```
+
+For agents with different MCP naming conventions (e.g. Cursor), configure the prefix and separator:
+
+```yaml
+mcp_prefix: "mcp_"
+mcp_separator: "_"
+```
+
+See [docs/reference.md](docs/reference.md) for the full configuration reference.
 
 ## Requirements
 
