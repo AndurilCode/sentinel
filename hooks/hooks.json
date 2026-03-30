@@ -2,9 +2,13 @@
   "hooks": {
     "PreToolUse": [
       {
-        "type": "command",
-        "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel.py",
-        "timeout": 10000
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel.py",
+            "timeout": 10000
+          }
+        ]
       }
     ]
   }
