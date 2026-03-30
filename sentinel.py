@@ -219,21 +219,27 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
     Returns a violation dict if KO, None if OK.
     """
     prompt = render_prompt(rule, event, config)
-    think_tag = "/think\n" if config.get("think") else "/no_think\n"
 
     # Allow per-rule model override
     model = rule.get("model", config["model"])
+
+    # think: false disables internal chain-of-thought in thinking models
+    # (e.g. qwen3.5). Without this, the model burns all tokens on hidden
+    # reasoning and returns empty content. Set think: true in config for
+    # higher accuracy at the cost of latency.
+    think = config.get("think", False)
 
     payload = json.dumps({
         "model":  model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": think_tag + prompt},
+            {"role": "user",   "content": prompt},
         ],
         "format": "json",
         "stream": False,
+        "think":  think,
         "options": {
-            "num_predict": 150,
+            "num_predict": 150 if not think else 1000,
             "temperature": 0.1,
         },
     }).encode()
