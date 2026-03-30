@@ -20,6 +20,7 @@ import fnmatch
 import time
 import urllib.request
 import urllib.error
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -42,6 +43,7 @@ DEFAULTS = {
     "timeout_ms": 5000,
     "confidence_threshold": 0.7,
     "max_parallel": 4,
+    "ollama_concurrency": 1,    # actual concurrent Ollama calls (GPU bound)
     "think": False,
     "fail_open": True,
     "log_file": None,          # optional JSONL path for Vigil integration
@@ -238,6 +240,11 @@ def render_prompt(rule: dict, event: dict, config: dict) -> str:
 
 # ── Ollama evaluation ───────────────────────────────────────────────
 
+# Semaphore gates actual Ollama HTTP calls to avoid GPU contention.
+# Initialized in main() based on config["ollama_concurrency"].
+_ollama_semaphore: Optional[threading.Semaphore] = None
+
+
 def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
     """
     Call Ollama for single-rule binary evaluation.
@@ -273,13 +280,20 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
     timeout_s = config["timeout_ms"] / 1000
     t0 = time.monotonic()
 
+    sem = _ollama_semaphore
     try:
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            body = json.loads(resp.read())
+        if sem:
+            sem.acquire()
+        try:
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                body = json.loads(resp.read())
+        finally:
+            if sem:
+                sem.release()
 
         content = body.get("message", {}).get("content", "")
         elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -306,9 +320,9 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
         return None
 
     except (urllib.error.URLError, ConnectionError) as e:
-        return _handle_offline(rule, e, config)
+        return _handle_offline(rule, e, config, t0)
     except Exception as e:
-        return _handle_offline(rule, e, config)
+        return _handle_offline(rule, e, config, t0)
 
 
 def _make_error(rule, msg, config):
@@ -323,14 +337,36 @@ def _make_error(rule, msg, config):
     }
 
 
-def _handle_offline(rule, exc, config):
+def _handle_offline(rule, exc, config, t0=None):
+    elapsed_ms = int((time.monotonic() - t0) * 1000) if t0 else 0
+    is_timeout = "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower()
+    reason = f"Sentinel {'timeout' if is_timeout else 'offline'}: {exc}"
+
+    # Log errors/timeouts so they don't vanish silently
+    log_path = config.get("log_file")
+    if log_path:
+        entry = {
+            "ts":         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "rule_id":    rule["id"],
+            "level":      "error",
+            "error_type": "timeout" if is_timeout else "offline",
+            "reason":     reason,
+            "elapsed_ms": elapsed_ms,
+            "model":      rule.get("model", config["model"]),
+        }
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass
+
     if config.get("fail_open", True):
         return None
     return {
         "rule_id":    rule["id"],
         "severity":   "block",
         "confidence": 1.0,
-        "reason":     f"Sentinel offline: {exc}",
+        "reason":     reason,
         "error":      True,
     }
 
@@ -466,7 +502,11 @@ def main():
     if not matching:
         sys.exit(0)
 
-    # Parallel evaluation
+    # Initialize concurrency gate for Ollama calls
+    global _ollama_semaphore
+    _ollama_semaphore = threading.Semaphore(config.get("ollama_concurrency", 1))
+
+    # Parallel evaluation (semaphore gates actual Ollama calls)
     violations = []
     with ThreadPoolExecutor(max_workers=config["max_parallel"]) as pool:
         futures = {
