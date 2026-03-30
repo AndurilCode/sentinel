@@ -161,6 +161,86 @@ class TestParseEvent:
         assert ev["template_vars"]["file_path"] == ""
 
 
+class TestNormalizeInput:
+    """Test input normalization across agent formats."""
+
+    def test_claude_code_format(self):
+        data = {"tool_name": "Write", "tool_input": {"file_path": "/x", "content": "y"}}
+        normalized, fmt = sentinel.normalize_input(data)
+        assert fmt == "claude_code"
+        assert normalized["tool_name"] == "Write"
+        assert normalized["tool_input"]["file_path"] == "/x"
+
+    def test_copilot_format_string_args(self):
+        data = {"toolName": "bash", "toolArgs": '{"command": "ls -la"}'}
+        normalized, fmt = sentinel.normalize_input(data)
+        assert fmt == "copilot"
+        assert normalized["tool_name"] == "bash"
+        assert normalized["tool_input"]["command"] == "ls -la"
+
+    def test_copilot_format_empty_args(self):
+        data = {"toolName": "create_file", "toolArgs": "{}"}
+        normalized, fmt = sentinel.normalize_input(data)
+        assert fmt == "copilot"
+        assert normalized["tool_input"] == {}
+
+    def test_copilot_format_invalid_json_args(self):
+        data = {"toolName": "bash", "toolArgs": "not json"}
+        normalized, fmt = sentinel.normalize_input(data)
+        assert fmt == "copilot"
+        assert normalized["tool_input"] == {}
+
+    def test_copilot_format_object_args(self):
+        """toolArgs might already be an object in some versions."""
+        data = {"toolName": "bash", "toolArgs": {"command": "echo hi"}}
+        normalized, fmt = sentinel.normalize_input(data)
+        assert fmt == "copilot"
+        assert normalized["tool_input"]["command"] == "echo hi"
+
+    def test_unknown_format(self):
+        data = {"action": "something", "params": {}}
+        normalized, fmt = sentinel.normalize_input(data)
+        assert fmt == "unknown"
+
+    def test_copilot_end_to_end(self):
+        """Full flow: Copilot input → normalize → parse_event."""
+        data = {"toolName": "run_in_terminal", "toolArgs": '{"command": "npm test"}'}
+        normalized, fmt = sentinel.normalize_input(data)
+        ev = sentinel.parse_event(normalized)
+        assert ev["trigger"] == "bash"
+        assert ev["template_vars"]["command"] == "npm test"
+
+
+class TestFormatDecision:
+    """Test output formatting for different agent formats."""
+
+    def test_claude_code_block(self):
+        output = json.loads(sentinel.format_decision("blocked", blockers=True, agent_format="claude_code"))
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        assert output["hookSpecificOutput"]["permissionDecisionReason"] == "blocked"
+
+    def test_claude_code_warn(self):
+        output = json.loads(sentinel.format_decision("warning", blockers=False, agent_format="claude_code"))
+        assert "additionalContext" in output["hookSpecificOutput"]
+        assert "permissionDecision" not in output["hookSpecificOutput"]
+
+    def test_copilot_block(self):
+        output = json.loads(sentinel.format_decision("blocked", blockers=True, agent_format="copilot"))
+        assert output["permissionDecision"] == "deny"
+        assert output["permissionDecisionReason"] == "blocked"
+        assert "hookSpecificOutput" not in output
+
+    def test_copilot_warn(self):
+        output = json.loads(sentinel.format_decision("warning", blockers=False, agent_format="copilot"))
+        assert output["permissionDecision"] == "allow"
+        assert output["permissionDecisionReason"] == "warning"
+
+    def test_unknown_format_defaults_to_claude_code(self):
+        output = json.loads(sentinel.format_decision("err", blockers=True, agent_format="unknown"))
+        assert "hookSpecificOutput" in output
+
+
 class TestParseEventMultiAgent:
     """Test configurable tool_map for non-Claude Code agents."""
 

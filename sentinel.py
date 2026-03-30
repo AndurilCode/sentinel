@@ -208,6 +208,33 @@ def load_rules(rules_dir: str) -> list[dict]:
             sys.stderr.write(f"SENTINEL: {entry}: failed to parse (skipped)\n")
     return rules
 
+# ── Input normalization ─────────────────────────────────────────────
+
+def normalize_input(data: dict) -> tuple[dict, str]:
+    """Normalize hook payloads from different agents into a common format.
+
+    Returns (normalized_data, agent_format) where agent_format is used
+    later to produce the correct output structure.
+
+    Claude Code: {"tool_name": "Write", "tool_input": {...}}
+    Copilot CLI: {"toolName": "bash", "toolArgs": "{...}"}  (toolArgs is a JSON string)
+    """
+    if "tool_name" in data:
+        return data, "claude_code"
+
+    if "toolName" in data:
+        tool_args = data.get("toolArgs", "{}")
+        if isinstance(tool_args, str):
+            try:
+                tool_args = json.loads(tool_args)
+            except (json.JSONDecodeError, TypeError):
+                tool_args = {}
+        return {"tool_name": data["toolName"], "tool_input": tool_args}, "copilot"
+
+    # Unknown format — pass through, best effort
+    return data, "unknown"
+
+
 # ── Event parsing ───────────────────────────────────────────────────
 
 def _relativize(path: str) -> str:
@@ -544,6 +571,44 @@ def format_report(violations: list[dict]) -> str:
 
     return "\n".join(lines)
 
+
+def format_decision(report: str, blockers: bool, agent_format: str) -> Optional[str]:
+    """Format the decision JSON for the calling agent's expected structure.
+
+    Claude Code: {"hookSpecificOutput": {"hookEventName": "PreToolUse", ...}}
+    Copilot CLI: {"permissionDecision": "deny", "permissionDecisionReason": "..."}
+    """
+    if agent_format == "copilot":
+        if blockers:
+            return json.dumps({
+                "permissionDecision": "deny",
+                "permissionDecisionReason": report,
+            })
+        else:
+            # Copilot has no additionalContext equivalent — use allow + reason
+            return json.dumps({
+                "permissionDecision": "allow",
+                "permissionDecisionReason": report,
+            })
+
+    # Claude Code (default) and unknown formats
+    if blockers:
+        return json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": report,
+            }
+        })
+    else:
+        return json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": report,
+            }
+        })
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def _find_config_dir() -> Optional[str]:
@@ -578,6 +643,14 @@ def main():
     if not rules:
         sys.exit(0)
 
+    # Read hook event (before pre-flight so we know the agent format)
+    try:
+        raw_data = json.loads(sys.stdin.read())
+    except Exception:
+        sys.exit(0)  # unparseable → fail open
+
+    event_data, agent_format = normalize_input(raw_data)
+
     # Pre-flight: check Ollama is reachable before doing any work.
     # Avoids N timeouts per rule when Ollama is simply not running.
     try:
@@ -587,21 +660,11 @@ def main():
         if config.get("fail_open", True):
             sys.exit(0)  # Ollama offline → silent pass-through
         else:
-            print(json.dumps({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": "SENTINEL: Ollama is not reachable (fail_open: false)",
-                }
-            }))
+            print(format_decision(
+                "SENTINEL: Ollama is not reachable (fail_open: false)",
+                blockers=True, agent_format=agent_format,
+            ))
             sys.exit(0)
-
-    # Read hook event
-    try:
-        event_data = json.loads(sys.stdin.read())
-    except Exception:
-        sys.exit(0)  # unparseable → fail open
-
     event = parse_event(event_data, config)
 
     # Filter applicable rules
@@ -630,26 +693,8 @@ def main():
 
     report = format_report(violations)
     blockers = any(v["severity"] == "block" for v in violations)
-
-    if blockers:
-        # Block: output structured JSON to stdout for Claude Code to deny
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": report,
-            }
-        }))
-        sys.exit(0)
-    else:
-        # Warnings only: structured JSON so Claude Code injects into context
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": report,
-            }
-        }))
-        sys.exit(0)
+    print(format_decision(report, blockers, agent_format))
+    sys.exit(0)
 
 
 if __name__ == "__main__":
