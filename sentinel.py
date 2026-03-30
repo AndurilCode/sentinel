@@ -373,20 +373,12 @@ def render_prompt(rule: dict, event: dict, config: dict) -> str:
 _ollama_semaphore: Optional[threading.Semaphore] = None
 
 
-def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
-    """
-    Call Ollama for single-rule binary evaluation.
-    Returns a violation dict if KO, None if OK.
-    """
-    prompt = render_prompt(rule, event, config)
+def _call_ollama(prompt: str, model: str, config: dict) -> str:
+    """Send a chat request to Ollama and return the response content.
 
-    # Allow per-rule model override
-    model = rule.get("model", config["model"])
-
-    # think: false disables internal chain-of-thought in thinking models
-    # (e.g. qwen3). Without this, the model burns all tokens on hidden
-    # reasoning and returns empty content. Set think: true in config for
-    # higher accuracy at the cost of latency.
+    Handles semaphore gating, payload construction, and HTTP transport.
+    Raises on network/timeout errors — caller decides how to handle.
+    """
     think = config.get("think", False)
 
     payload = json.dumps({
@@ -406,76 +398,33 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
 
     url = f"{config['ollama_url']}/api/chat"
     timeout_s = config["timeout_ms"] / 1000
-    t0 = time.monotonic()
 
     sem = _ollama_semaphore
+    if sem:
+        sem.acquire()
     try:
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = json.loads(resp.read())
+    finally:
         if sem:
-            sem.acquire()
-        try:
-            req = urllib.request.Request(
-                url, data=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                body = json.loads(resp.read())
-        finally:
-            if sem:
-                sem.release()
+            sem.release()
 
-        content = body.get("message", {}).get("content", "")
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-
-        # Extract JSON — handle stray text around it
-        js, je = content.find("{"), content.rfind("}") + 1
-        if js < 0 or je <= js:
-            return _make_error(rule, f"Unparseable: {content[:120]}", config, event, elapsed_ms)
-
-        ev = json.loads(content[js:je])
-        violation  = bool(ev.get("violation", False))
-        confidence = float(ev.get("confidence", 0.5))
-        reason     = ev.get("reason", "no reason")
-
-        _log(config, rule, event, violation, confidence, reason, elapsed_ms)
-
-        if violation and confidence >= config["confidence_threshold"]:
-            return {
-                "rule_id":    rule["id"],
-                "severity":   rule.get("severity", "block"),
-                "confidence": confidence,
-                "reason":     reason,
-            }
-        return None
-
-    except Exception as e:
-        return _handle_offline(rule, e, config, t0, event)
+    return body.get("message", {}).get("content", "")
 
 
-def _make_error(rule, msg, config, event=None, elapsed_ms=0):
-    if event:
-        _log(config, rule, event, violation=False, confidence=0.0,
-             reason=msg, elapsed_ms=elapsed_ms, level="skipped")
-    if config.get("fail_open", True):
-        return None
-    return {
-        "rule_id":    rule["id"],
-        "severity":   "block",
-        "confidence": 1.0,
-        "reason":     msg,
-        "error":      True,
-    }
+def _fail(rule: dict, reason: str, config: dict,
+          event: dict = None, elapsed_ms: int = 0) -> Optional[dict]:
+    """Return None (fail-open) or a block dict (fail-closed).
 
-
-def _handle_offline(rule, exc, config, t0=None, event=None):
-    elapsed_ms = int((time.monotonic() - t0) * 1000) if t0 else 0
-    is_timeout = "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower()
-    error_type = "timeout" if is_timeout else "offline"
-    reason = f"Sentinel {error_type}: {exc}"
-
+    Unified error path for unparseable responses, timeouts, and offline.
+    """
     if event:
         _log(config, rule, event, violation=False, confidence=0.0,
              reason=reason, elapsed_ms=elapsed_ms, level="skipped")
-
     if config.get("fail_open", True):
         return None
     return {
@@ -485,6 +434,47 @@ def _handle_offline(rule, exc, config, t0=None, event=None):
         "reason":     reason,
         "error":      True,
     }
+
+
+def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
+    """Call Ollama for single-rule binary evaluation.
+
+    Returns a violation dict if KO, None if OK.
+    """
+    prompt = render_prompt(rule, event, config)
+    model = rule.get("model", config["model"])
+    t0 = time.monotonic()
+
+    try:
+        content = _call_ollama(prompt, model, config)
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        is_timeout = "timed out" in str(e).lower() or "timeout" in type(e).__name__.lower()
+        error_type = "timeout" if is_timeout else "offline"
+        return _fail(rule, f"Sentinel {error_type}: {e}", config, event, elapsed_ms)
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+    # Extract JSON — handle stray text around it
+    js, je = content.find("{"), content.rfind("}") + 1
+    if js < 0 or je <= js:
+        return _fail(rule, f"Unparseable: {content[:120]}", config, event, elapsed_ms)
+
+    ev = json.loads(content[js:je])
+    violation  = bool(ev.get("violation", False))
+    confidence = float(ev.get("confidence", 0.5))
+    reason     = ev.get("reason", "no reason")
+
+    _log(config, rule, event, violation, confidence, reason, elapsed_ms)
+
+    if violation and confidence >= config["confidence_threshold"]:
+        return {
+            "rule_id":    rule["id"],
+            "severity":   rule.get("severity", "block"),
+            "confidence": confidence,
+            "reason":     reason,
+        }
+    return None
 
 # ── Logging (JSONL for Vigil) ───────────────────────────────────────
 
@@ -593,6 +583,16 @@ def format_decision(report: str, blockers: bool, agent_format: str) -> Optional[
 
 # ── Main ────────────────────────────────────────────────────────────
 
+def _ollama_reachable(config: dict) -> bool:
+    """Quick pre-flight: is Ollama responding?"""
+    try:
+        req = urllib.request.Request(f"{config['ollama_url']}/api/tags")
+        urllib.request.urlopen(req, timeout=1)
+        return True
+    except Exception:
+        return False
+
+
 def _find_config_dir() -> Optional[str]:
     """Resolve repo-side config directory.
 
@@ -633,12 +633,8 @@ def main():
 
     event_data, agent_format = normalize_input(raw_data)
 
-    # Pre-flight: check Ollama is reachable before doing any work.
-    # Avoids N timeouts per rule when Ollama is simply not running.
-    try:
-        req = urllib.request.Request(f"{config['ollama_url']}/api/tags")
-        urllib.request.urlopen(req, timeout=1)
-    except Exception:
+    # Pre-flight: avoid N timeouts per rule when Ollama is not running
+    if not _ollama_reachable(config):
         if config.get("fail_open", True):
             _debug("Ollama unreachable, fail_open=true, skipping all rules", config)
             sys.exit(0)

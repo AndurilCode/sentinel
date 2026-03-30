@@ -3,7 +3,6 @@
 import json
 import os
 import sys
-import time
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -750,39 +749,32 @@ class TestMainDecision:
         assert blockers is True
 
 
-# ── 9. _make_error and _handle_offline ────────────────────────────
+# ── 9. _fail (unified error path) ───────────────────────────────
 
 
-class TestErrorHandling:
-    def test_make_error_fail_open(self):
+class TestFail:
+    def test_fail_open_returns_none(self):
         rule = {"id": "r1"}
         config = {"fail_open": True}
-        assert sentinel._make_error(rule, "err", config) is None
+        assert sentinel._fail(rule, "err", config) is None
 
-    def test_make_error_fail_closed(self):
+    def test_fail_closed_returns_block(self):
         rule = {"id": "r1"}
         config = {"fail_open": False}
-        result = sentinel._make_error(rule, "err msg", config)
+        result = sentinel._fail(rule, "err msg", config)
         assert result is not None
         assert result["rule_id"] == "r1"
         assert result["severity"] == "block"
         assert result["error"] is True
 
-    def test_handle_offline_fail_open(self):
-        rule = {"id": "r1", "model": "test"}
+    def test_fail_with_event_logs(self):
+        rule = {"id": "r1"}
         config = {"fail_open": True, "model": "test", "log_file": None}
-        result = sentinel._handle_offline(rule, Exception("connection refused"), config, time.monotonic())
-        assert result is None
+        event = {"trigger": "bash", "template_vars": {}, "match_targets": []}
+        assert sentinel._fail(rule, "offline", config, event, elapsed_ms=42) is None
 
-    def test_handle_offline_fail_closed(self):
-        rule = {"id": "r1", "model": "test"}
-        config = {"fail_open": False, "model": "test", "log_file": None}
-        result = sentinel._handle_offline(rule, Exception("connection refused"), config, time.monotonic())
-        assert result is not None
-        assert result["error"] is True
-
-    def test_handle_offline_detects_timeout(self):
-        rule = {"id": "r1", "model": "test"}
-        config = {"fail_open": False, "model": "test", "log_file": None}
-        result = sentinel._handle_offline(rule, Exception("timed out"), config, time.monotonic())
+    def test_fail_closed_preserves_reason(self):
+        rule = {"id": "r1"}
+        config = {"fail_open": False}
+        result = sentinel._fail(rule, "Sentinel timeout: timed out", config)
         assert "timeout" in result["reason"]
