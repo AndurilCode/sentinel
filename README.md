@@ -6,8 +6,11 @@ Gates agent actions against repo-defined rules using Ollama. Silent when everyth
 ## Quick start
 
 ```bash
+# Add the marketplace
+/plugin marketplace add AndurilCode/sentinel
+
 # Install the plugin
-claude plugin install sentinel
+/plugin install sentinel@sentinel
 
 # Initialize in your repo
 /sentinel-init
