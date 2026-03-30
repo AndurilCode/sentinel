@@ -1,5 +1,6 @@
 {
   "name": "sentinel",
+  "description": "Marketplace for the Sentinel plugin",
   "owner": {
     "name": "AndurilCode"
   },
@@ -8,10 +9,7 @@
       "name": "sentinel",
       "version": "1.0.0",
       "description": "Local LLM rule evaluator — gates agent actions against repo-defined rules using Ollama",
-      "source": {
-        "source": "git",
-        "url": "https://github.com/AndurilCode/sentinel"
-      }
+      "source": "./"
     }
   ]
 }
