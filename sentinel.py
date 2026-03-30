@@ -42,7 +42,7 @@ except ImportError:
 # ── Defaults ────────────────────────────────────────────────────────
 
 DEFAULTS = {
-    "model": "qwen3.5:4b",
+    "model": "gemma3:4b",
     "ollama_url": "http://localhost:11434",
     "timeout_ms": 5000,
     "confidence_threshold": 0.7,
@@ -390,7 +390,7 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
     model = rule.get("model", config["model"])
 
     # think: false disables internal chain-of-thought in thinking models
-    # (e.g. qwen3.5). Without this, the model burns all tokens on hidden
+    # (e.g. qwen3). Without this, the model burns all tokens on hidden
     # reasoning and returns empty content. Set think: true in config for
     # higher accuracy at the cost of latency.
     think = config.get("think", False)
@@ -435,7 +435,7 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
         # Extract JSON — handle stray text around it
         js, je = content.find("{"), content.rfind("}") + 1
         if js < 0 or je <= js:
-            return _make_error(rule, f"Unparseable: {content[:120]}", config)
+            return _make_error(rule, f"Unparseable: {content[:120]}", config, event, elapsed_ms)
 
         ev = json.loads(content[js:je])
         violation  = bool(ev.get("violation", False))
@@ -454,12 +454,15 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
         return None
 
     except (urllib.error.URLError, ConnectionError) as e:
-        return _handle_offline(rule, e, config, t0)
+        return _handle_offline(rule, e, config, t0, event)
     except Exception as e:
-        return _handle_offline(rule, e, config, t0)
+        return _handle_offline(rule, e, config, t0, event)
 
 
-def _make_error(rule, msg, config):
+def _make_error(rule, msg, config, event=None, elapsed_ms=0):
+    if event:
+        _log(config, rule, event, violation=False, confidence=0.0,
+             reason=msg, elapsed_ms=elapsed_ms, level="skipped")
     if config.get("fail_open", True):
         return None
     return {
@@ -471,28 +474,15 @@ def _make_error(rule, msg, config):
     }
 
 
-def _handle_offline(rule, exc, config, t0=None):
+def _handle_offline(rule, exc, config, t0=None, event=None):
     elapsed_ms = int((time.monotonic() - t0) * 1000) if t0 else 0
     is_timeout = "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower()
-    reason = f"Sentinel {'timeout' if is_timeout else 'offline'}: {exc}"
+    error_type = "timeout" if is_timeout else "offline"
+    reason = f"Sentinel {error_type}: {exc}"
 
-    # Log errors/timeouts so they don't vanish silently
-    log_path = config.get("log_file")
-    if log_path:
-        entry = {
-            "ts":         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "rule_id":    rule["id"],
-            "level":      "error",
-            "error_type": "timeout" if is_timeout else "offline",
-            "reason":     reason,
-            "elapsed_ms": elapsed_ms,
-            "model":      rule.get("model", config["model"]),
-        }
-        try:
-            with open(log_path, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-        except Exception:
-            pass
+    if event:
+        _log(config, rule, event, violation=False, confidence=0.0,
+             reason=reason, elapsed_ms=elapsed_ms, level="skipped")
 
     if config.get("fail_open", True):
         return None
@@ -506,12 +496,14 @@ def _handle_offline(rule, exc, config, t0=None):
 
 # ── Logging (JSONL for Vigil) ───────────────────────────────────────
 
-def _log(config, rule, event, violation, confidence, reason, elapsed_ms):
+def _log(config, rule, event, violation, confidence, reason, elapsed_ms,
+         *, level="eval"):
     log_path = config.get("log_file")
     if not log_path:
         return
     entry = {
         "ts":         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "level":      level,
         "rule_id":    rule["id"],
         "trigger":    event["trigger"],
         "target":     (event.get("match_targets") or [""])[0][:200],
@@ -658,7 +650,8 @@ def main():
         urllib.request.urlopen(req, timeout=1)
     except Exception:
         if config.get("fail_open", True):
-            sys.exit(0)  # Ollama offline → silent pass-through
+            _debug("Ollama unreachable, fail_open=true, skipping all rules", config)
+            sys.exit(0)
         else:
             print(format_decision(
                 "SENTINEL: Ollama is not reachable (fail_open: false)",

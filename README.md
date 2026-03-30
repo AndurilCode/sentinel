@@ -97,6 +97,6 @@ See [docs/reference.md](docs/reference.md) for the full configuration reference.
 ## Requirements
 
 - Python 3
-- [Ollama](https://ollama.com) with a pulled model (default: `qwen3.5:4b`)
+- [Ollama](https://ollama.com) with a pulled model (default: `gemma3:4b`)
 
 PyYAML is auto-installed on first run if missing.

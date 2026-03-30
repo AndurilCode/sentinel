@@ -7,6 +7,8 @@
 id: unsafe-imports
 trigger: file_write
 severity: block
+# Semantic content analysis — larger model for fewer false positives
+model: "gemma3:12b"
 
 scope:
   - "**/*.ts"

@@ -30,9 +30,9 @@ exclude:
 # warn  → exit 0 with warning in stdout (Claude sees it but proceeds)
 severity: block
 
-# Optional per-rule model override.
-# Uncomment to use a more capable model for high-stakes rules.
-# model: "qwen3.5:9b"
+# Per-rule model override: block rules that evaluate content semantically
+# benefit from a larger model. ~2x latency, meaningfully better accuracy.
+model: "gemma3:12b"
 
 # Evaluation prompt. Available template variables:
 #   {{file_path}}        — target file path

@@ -24,7 +24,7 @@ scope:                           # glob patterns — rule fires if any match
   - "src/core/billing/**"
 exclude:                         # glob patterns — exempt even if scope matches
   - "**/*.test.ts"
-model: "qwen3.5:9b"             # optional per-rule model override
+model: "gemma3:12b"             # optional per-rule model override
 prompt: |                        # evaluation prompt with {{template_vars}}
   CONTEXT: {{action_summary}}
   RULE: ...
@@ -63,6 +63,7 @@ prompt: |                        # evaluation prompt with {{template_vars}}
 5. **Keep prompts focused.** The LLM does binary classification on one rule. Give it clear context and a clear question.
 6. **End every prompt with:** `Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}`
 7. **Don't use LLM for deterministic checks.** If a rule is purely about file paths, use Claude Code permissions instead.
+8. **Match model size to severity.** `block` rules prevent the agent from acting — accuracy matters more than speed. Use a larger model (e.g., `model: "gemma3:12b"`) for block rules that evaluate content semantically (secrets, PII, SQL safety). Leave `warn` rules and simple pattern rules on the default small model for speed.
 
 ### Examples
 
@@ -85,7 +86,7 @@ Ask 2-4 targeted follow-up questions, one at a time. Focus on:
 - **Excludes** — any exceptions? (test files, specific directories, dry-run commands)
 - **Severity** — should violations block the action or just warn? Recommend starting with `warn`.
 
-Do not ask about fields the user hasn't mentioned and that have good defaults (model, prompt template details). Keep it focused.
+Do not ask about prompt template details. Keep it focused. If the user picks `severity: block` and the rule evaluates content semantically (not just file paths), recommend adding `model: "gemma3:12b"` for better accuracy and explain the speed tradeoff (~2x latency).
 
 ### Step 3: Draft the rule
 

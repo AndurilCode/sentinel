@@ -22,7 +22,7 @@ View or update the Sentinel configuration in the current repository.
 
 | Key | Default | Description |
 |---|---|---|
-| `model` | `qwen3.5:4b` | Ollama model for evaluation |
+| `model` | `gemma3:4b` | Ollama model for evaluation |
 | `ollama_url` | `http://localhost:11434` | Ollama endpoint |
 | `timeout_ms` | `5000` | Per-rule evaluation timeout |
 | `confidence_threshold` | `0.7` | Minimum confidence to count as violation |
@@ -37,6 +37,5 @@ View or update the Sentinel configuration in the current repository.
 
 | Hardware | Model | Notes |
 |---|---|---|
-| 8 GB RAM | `qwen3.5:4b` | Dense, ~3 GB at Q4 |
-| 16 GB RAM | `qwen3.5-35b-a3b` | MoE, 3B active, ~12 GB at Q4 |
-| 32 GB RAM | `qwen3.5:9b` | Dense, best sub-10B accuracy |
+| 8 GB RAM | `gemma3:4b` | Dense, ~3 GB at Q4 |
+| 16 GB RAM | `gemma3:12b` | Dense, best accuracy for block rules |

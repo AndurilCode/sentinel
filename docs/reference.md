@@ -18,9 +18,9 @@ Agent (Claude Code,                  Sentinel                          Ollama
     │                                    │                                │
     │                                    │  5. Parallel evaluation ──────>│
     │                                    │     (one call per rule)        │
-    │                                    │     ┌─ rule A ───> qwen3.5:4b │
-    │                                    │     ├─ rule B ───> qwen3.5:4b │
-    │                                    │     └─ rule C ───> qwen3.5:9b │ (per-rule override)
+    │                                    │     ┌─ rule A ───> gemma3:4b │
+    │                                    │     ├─ rule B ───> gemma3:4b │
+    │                                    │     └─ rule C ───> gemma3:12b │ (per-rule override)
     │                                    │                                │
     │                                    │  6. Collect results            │
     │                                    │     violations only            │
@@ -62,7 +62,7 @@ scope:                           # glob patterns — rule fires if any match
   - "**/payments/*.ts"
 exclude:                         # glob patterns — exempt even if scope matches
   - "**/*.test.ts"
-model: "qwen3.5:9b"             # optional per-rule model override
+model: "gemma3:12b"             # optional per-rule model override
 prompt: |                        # evaluation prompt with {{template_vars}}
   CONTEXT: {{action_summary}}
   FILE: {{file_path}}
@@ -97,7 +97,7 @@ prompt: |                        # evaluation prompt with {{template_vars}}
 
 | Key | Default | Description |
 |---|---|---|
-| `model` | `qwen3.5:4b` | Ollama model for evaluation |
+| `model` | `gemma3:4b` | Ollama model for evaluation |
 | `ollama_url` | `http://localhost:11434` | Ollama endpoint |
 | `timeout_ms` | `5000` | Per-rule evaluation timeout |
 | `confidence_threshold` | `0.7` | Minimum confidence to count as violation |
@@ -156,7 +156,7 @@ Each evaluation appends one JSONL line:
   "confidence": 0.92,
   "reason": "File is in the protected billing directory",
   "elapsed_ms": 47,
-  "model": "qwen3.5:4b"
+  "model": "gemma3:4b"
 }
 ```
 

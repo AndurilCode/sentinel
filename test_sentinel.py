@@ -19,7 +19,7 @@ def default_config():
     return {
         **sentinel.DEFAULTS,
         "rules_dir": "/tmp/sentinel-test-rules",
-        "model": "qwen3.5:4b",
+        "model": "gemma3:4b",
         "ollama_url": "http://localhost:11434",
         "timeout_ms": 5000,
         "confidence_threshold": 0.7,
@@ -582,7 +582,7 @@ class TestLoadConfig:
     def test_defaults_applied(self, tmp_path):
         config_dir = str(tmp_path)
         config = sentinel.load_config(config_dir)
-        assert config["model"] == "qwen3.5:4b"
+        assert config["model"] == "gemma3:4b"
         assert config["fail_open"] is True
         assert config["confidence_threshold"] == 0.7
 

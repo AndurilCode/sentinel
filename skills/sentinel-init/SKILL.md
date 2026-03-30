@@ -36,10 +36,10 @@ If it still doesn't respond, tell the user to start Ollama manually and re-run `
 
 ### Step 4: Check and pull the default model
 
-Check if `qwen3.5:4b` is available by inspecting the response from `/api/tags`.
+Check if `gemma3:4b` is available by inspecting the response from `/api/tags`.
 
 **If not available**, pull it:
-- Run `ollama pull qwen3.5:4b`
+- Run `ollama pull gemma3:4b`
 - This downloads ~3 GB. Tell the user it's pulling and may take a few minutes.
 
 ### Step 5: Scaffold the config directory
@@ -56,12 +56,11 @@ Create `.claude/sentinel/config.yaml` with this content:
 # as a binary classification task with constrained JSON output.
 #
 # Recommended (by hardware):
-#   8 GB RAM   → qwen3.5:4b       (dense, ~3 GB at Q4)
-#   16 GB RAM  → qwen3.5-35b-a3b  (MoE, 3B active, ~12 GB at Q4)
-#   32 GB RAM  → qwen3.5:9b       (dense, best sub-10B accuracy)
+#   8 GB RAM   → gemma3:4b        (default, ~3 GB at Q4)
+#   16 GB RAM  → gemma3:12b       (best accuracy for block rules)
 #
 # Any Ollama-compatible model works. Per-rule overrides via `model:` in rule files.
-model: "qwen3.5:4b"
+model: "gemma3:4b"
 
 # Ollama endpoint
 ollama_url: "http://localhost:11434"
@@ -121,6 +120,6 @@ Expected: exit 0, no output (no rules to match yet, so it passes through).
 
 Tell the user:
 
-> Sentinel initialized at `.claude/sentinel/`. Ollama is running with `qwen3.5:4b`. Use `/sentinel-rule` to create your first rule.
+> Sentinel initialized at `.claude/sentinel/`. Ollama is running with `gemma3:4b`. Use `/sentinel-rule` to create your first rule.
 
 Do NOT copy example rules into the repo. The rules directory starts empty.
