@@ -8,15 +8,26 @@ user-invocable: true
 
 Set up Sentinel in the current repository. Checks prerequisites, installs what's missing, and scaffolds the config directory.
 
+Supports both Claude Code and GitHub Copilot CLI. The skill detects which agent is running and installs the appropriate hook configuration.
+
 ## What to do
 
 Run these steps in order. Stop and report if anything fails.
 
-### Step 1: Check if already initialized
+### Step 1: Detect the agent
+
+Determine which coding agent is running:
+
+- **Claude Code**: The `CLAUDE_PLUGIN_ROOT` environment variable is set, or this skill was invoked via `/sentinel-init`. This is the default.
+- **Copilot CLI**: The `GITHUB_COPILOT` or `COPILOT_AGENT` environment variable is set, or the user explicitly says they're using Copilot.
+
+Remember which agent was detected — it determines hook installation in Step 8.
+
+### Step 2: Check if already initialized
 
 Check if `.claude/sentinel/` already exists in the current working directory. If it does, tell the user it's already initialized and stop.
 
-### Step 2: Check and install Ollama
+### Step 3: Check and install Ollama
 
 Run `which ollama` to check if Ollama is installed.
 
@@ -24,7 +35,7 @@ Run `which ollama` to check if Ollama is installed.
 - **macOS**: `brew install ollama` (if brew is available), otherwise tell the user to download from https://ollama.com
 - **Linux**: `curl -fsSL https://ollama.com/install.sh | sh`
 
-### Step 3: Check if Ollama is running
+### Step 4: Check if Ollama is running
 
 Run `curl -s http://localhost:11434/api/tags` to check if Ollama is serving.
 
@@ -34,7 +45,7 @@ Run `curl -s http://localhost:11434/api/tags` to check if Ollama is serving.
 
 If it still doesn't respond, tell the user to start Ollama manually and re-run `/sentinel-init`.
 
-### Step 4: Check and pull the default model
+### Step 5: Check and pull the default model
 
 Check if `gemma3:4b` is available by inspecting the response from `/api/tags`.
 
@@ -42,7 +53,7 @@ Check if `gemma3:4b` is available by inspecting the response from `/api/tags`.
 - Run `ollama pull gemma3:4b`
 - This downloads ~3 GB. Tell the user it's pulling and may take a few minutes.
 
-### Step 5: Scaffold the config directory
+### Step 6: Scaffold the config directory
 
 Create `.claude/sentinel/config.yaml` with this content:
 
@@ -102,11 +113,40 @@ log_file: ".claude/sentinel/sentinel.log"
 rules_dir: "rules"
 ```
 
-### Step 6: Create the rules directory
+### Step 7: Create the rules directory
 
 Create `.claude/sentinel/rules/.gitkeep` (empty file) so the rules directory is tracked by git.
 
-### Step 7: Verify end-to-end
+### Step 8: Install hooks (Copilot CLI only)
+
+**Skip this step if running on Claude Code** — Claude Code auto-registers hooks from the plugin's `hooks/hooks.json`.
+
+For Copilot CLI, hooks must be installed manually. Create `.github/hooks/sentinel.json`:
+
+```bash
+mkdir -p .github/hooks
+```
+
+Then write `.github/hooks/sentinel.json` with this content, replacing `SENTINEL_PATH` with the absolute path to the directory containing `sentinel.py`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 SENTINEL_PATH/sentinel.py",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
+```
+
+To find the correct path, use the directory where this skill is running from (`${CLAUDE_PLUGIN_ROOT}` if available, otherwise ask the user where they cloned/installed Sentinel).
+
+### Step 9: Verify end-to-end
 
 Run a quick smoke test to confirm everything works:
 
@@ -116,10 +156,14 @@ echo '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' | SENTINEL_CON
 
 Expected: exit 0, no output (no rules to match yet, so it passes through).
 
-### Step 8: Done
+### Step 10: Done
 
 Tell the user:
 
 > Sentinel initialized at `.claude/sentinel/`. Ollama is running with `gemma3:4b`. Use `/sentinel-rule` to create your first rule.
+
+If Copilot CLI was detected, also tell the user:
+
+> Copilot CLI hooks installed at `.github/hooks/sentinel.json`. The `preToolUse` hook will evaluate rules on every tool call.
 
 Do NOT copy example rules into the repo. The rules directory starts empty.
