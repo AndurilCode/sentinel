@@ -7,6 +7,5 @@
   },
   "repository": "https://github.com/AndurilCode/sentinel",
   "license": "MIT",
-  "keywords": ["hooks", "safety", "ollama", "rules", "guardrails"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["hooks", "safety", "ollama", "rules", "guardrails"]
 }
