@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Sentinel — Local LLM rule evaluator for Claude Code hooks.
+Sentinel — Local LLM rule evaluator for coding agent hooks.
 
 Runs as a PreToolUse hook. Receives the tool event on stdin,
 filters applicable rules by trigger type + glob scope, evaluates
 matching rules in parallel against a local Ollama model, and blocks
 only on violations. Silent when all rules pass.
+
+Supports multiple agents via configurable tool_map: Claude Code,
+Copilot, Cursor, Windsurf, Cline, Amazon Q, and custom agents.
 
 Exit codes:
   0  — always (hook output controls blocking via permissionDecision JSON)
@@ -49,6 +52,41 @@ DEFAULTS = {
     "fail_open": True,
     "log_file": None,          # optional JSONL path for Vigil integration
     "content_max_chars": 800,  # truncate file content in prompts
+    # Tool-to-trigger mapping (override for non-Claude Code agents)
+    # Keys are exact tool_name strings from the hook payload.
+    # Values must be one of: file_write, bash, mcp
+    "tool_map": {
+        # Claude Code (default)
+        "Write":        "file_write",
+        "Edit":         "file_write",
+        "MultiEdit":    "file_write",
+        "NotebookEdit": "file_write",
+        "Bash":         "bash",
+        # Copilot (VS Code agent mode)
+        "create_file":             "file_write",
+        "replace_string_in_file":  "file_write",
+        "multi_replace_string_in_file": "file_write",
+        "run_in_terminal":         "bash",
+        # Cursor
+        "edit_file":        "file_write",
+        "run_terminal_cmd": "bash",
+        # Windsurf
+        "write_to_file": "file_write",
+        # "edit_file" already mapped above (Cursor)
+        "run_command":   "bash",
+        # Cline
+        # "write_to_file" already mapped above (Windsurf)
+        "replace_in_file":  "file_write",
+        "execute_command":  "bash",
+        # Amazon Q CLI
+        "fs_write":      "file_write",
+        "execute_bash":  "bash",
+    },
+    # MCP tool detection: prefix and separator for parsing server/tool names.
+    # Claude Code: mcp__server__tool  →  prefix="mcp__", separator="__"
+    # Cursor:      mcp_server_tool    →  prefix="mcp_",  separator="_"
+    "mcp_prefix": "mcp__",
+    "mcp_separator": "__",
 }
 
 SYSTEM_PROMPT = (
@@ -172,15 +210,6 @@ def load_rules(rules_dir: str) -> list[dict]:
 
 # ── Event parsing ───────────────────────────────────────────────────
 
-TOOL_TRIGGER_MAP = {
-    "Write":        "file_write",
-    "Edit":         "file_write",
-    "NotebookEdit": "file_write",
-    "Bash":         "bash",
-    # MCP tools are detected by prefix in parse_event(), not mapped here.
-}
-
-
 def _relativize(path: str) -> str:
     """Strip cwd prefix from absolute paths so relative scope globs match."""
     if not os.path.isabs(path):
@@ -192,16 +221,26 @@ def _relativize(path: str) -> str:
         return path
 
 
-def parse_event(data: dict) -> dict:
-    """Normalize Claude Code hook payload into evaluation context."""
+def parse_event(data: dict, config: Optional[dict] = None) -> dict:
+    """Normalize hook payload into evaluation context.
+
+    Uses config["tool_map"] for trigger detection and config["mcp_prefix"]
+    / config["mcp_separator"] for MCP tool parsing. Falls back to DEFAULTS
+    when config is None (backwards-compatible).
+    """
+    cfg = config or DEFAULTS
+    tool_map = cfg.get("tool_map", DEFAULTS["tool_map"])
+    mcp_prefix = cfg.get("mcp_prefix", DEFAULTS["mcp_prefix"])
+    mcp_separator = cfg.get("mcp_separator", DEFAULTS["mcp_separator"])
+
     tool = data.get("tool_name", "")
     inp  = data.get("tool_input", {})
 
-    # Detect MCP tools by prefix (mcp__<server>__<tool>)
-    if tool.startswith("mcp__"):
+    # Detect MCP tools by configurable prefix
+    if tool.startswith(mcp_prefix):
         trigger = "mcp"
     else:
-        trigger = TOOL_TRIGGER_MAP.get(tool, "unknown")
+        trigger = tool_map.get(tool, "unknown")
 
     ev = {
         "raw_tool":       tool,
@@ -219,7 +258,7 @@ def parse_event(data: dict) -> dict:
         ev["match_targets"] = [fp_rel]
         ev["template_vars"] = {
             "file_path":      fp_rel,
-            "content_snippet": content[:DEFAULTS["content_max_chars"]],
+            "content_snippet": content[:cfg.get("content_max_chars", DEFAULTS["content_max_chars"])],
             "content_length":  str(len(content)),
             "action_summary":  f"Write {len(content)} chars to {fp}",
         }
@@ -233,10 +272,11 @@ def parse_event(data: dict) -> dict:
         }
 
     elif ev["trigger"] == "mcp":
-        # Parse server and tool from tool_name: mcp__<server>__<tool>
-        parts    = tool.split("__", 2)
-        server   = parts[1] if len(parts) > 1 else ""
-        mcp_tool = parts[2] if len(parts) > 2 else ""
+        # Parse server and tool using configurable separator
+        remainder = tool[len(mcp_prefix):]
+        parts = remainder.split(mcp_separator, 1)
+        server   = parts[0] if len(parts) > 0 else ""
+        mcp_tool = parts[1] if len(parts) > 1 else ""
         args     = json.dumps(inp)[:500]
         composite = f"{server}:{mcp_tool}" if server else mcp_tool
         ev["match_targets"] = [composite, mcp_tool, server]
@@ -562,7 +602,7 @@ def main():
     except Exception:
         sys.exit(0)  # unparseable → fail open
 
-    event = parse_event(event_data)
+    event = parse_event(event_data, config)
 
     # Filter applicable rules
     matching = [r for r in rules if rule_matches(r, event)]

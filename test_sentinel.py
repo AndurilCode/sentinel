@@ -5,9 +5,7 @@ import os
 import sys
 import time
 import pytest
-from unittest.mock import patch, MagicMock, mock_open
-from io import BytesIO
-from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 # Import sentinel module
 sys.path.insert(0, os.path.dirname(__file__))
@@ -161,6 +159,93 @@ class TestParseEvent:
         ev = sentinel.parse_event({"tool_name": "Write", "tool_input": {}})
         assert ev["trigger"] == "file_write"
         assert ev["template_vars"]["file_path"] == ""
+
+
+class TestParseEventMultiAgent:
+    """Test configurable tool_map for non-Claude Code agents."""
+
+    def test_cursor_edit_file(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "edit_file", "tool_input": {"file_path": "/repo/app.ts", "content": "x"}},
+        )
+        assert ev["trigger"] == "file_write"
+
+    def test_cursor_terminal(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "run_terminal_cmd", "tool_input": {"command": "npm test"}},
+        )
+        assert ev["trigger"] == "bash"
+
+    def test_windsurf_write(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "write_to_file", "tool_input": {"file_path": "/repo/x.py", "content": "y"}},
+        )
+        assert ev["trigger"] == "file_write"
+
+    def test_windsurf_command(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "run_command", "tool_input": {"command": "ls"}},
+        )
+        assert ev["trigger"] == "bash"
+
+    def test_cline_replace(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "replace_in_file", "tool_input": {"file_path": "/repo/a.js", "content": "z"}},
+        )
+        assert ev["trigger"] == "file_write"
+
+    def test_cline_execute(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "execute_command", "tool_input": {"command": "git status"}},
+        )
+        assert ev["trigger"] == "bash"
+
+    def test_copilot_create_file(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "create_file", "tool_input": {"file_path": "/repo/new.ts", "content": "hi"}},
+        )
+        assert ev["trigger"] == "file_write"
+
+    def test_copilot_terminal(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "run_in_terminal", "tool_input": {"command": "make build"}},
+        )
+        assert ev["trigger"] == "bash"
+
+    def test_amazon_q_fs_write(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "fs_write", "tool_input": {"file_path": "/repo/f.py", "content": "x"}},
+        )
+        assert ev["trigger"] == "file_write"
+
+    def test_amazon_q_execute_bash(self):
+        ev = sentinel.parse_event(
+            {"tool_name": "execute_bash", "tool_input": {"command": "echo hi"}},
+        )
+        assert ev["trigger"] == "bash"
+
+    def test_cursor_mcp_prefix(self):
+        """Cursor uses mcp_ prefix with single underscore separator."""
+        config = dict(sentinel.DEFAULTS)
+        config["mcp_prefix"] = "mcp_"
+        config["mcp_separator"] = "_"
+        ev = sentinel.parse_event(
+            {"tool_name": "mcp_github_create_issue", "tool_input": {"title": "bug"}},
+            config=config,
+        )
+        assert ev["trigger"] == "mcp"
+        assert ev["template_vars"]["server_name"] == "github"
+        assert ev["template_vars"]["mcp_tool"] == "create_issue"
+
+    def test_custom_tool_map_override(self):
+        """User can add custom tool names via config."""
+        config = dict(sentinel.DEFAULTS)
+        config["tool_map"] = {"my_custom_write": "file_write", "my_shell": "bash"}
+        ev = sentinel.parse_event(
+            {"tool_name": "my_custom_write", "tool_input": {"file_path": "/x", "content": "y"}},
+            config=config,
+        )
+        assert ev["trigger"] == "file_write"
 
 
 # ── 2. Rule Matching ──────────────────────────────────────────────

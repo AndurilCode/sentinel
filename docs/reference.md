@@ -3,11 +3,14 @@
 ## Architecture
 
 ```
-Claude Code                          Sentinel                          Ollama
+Agent (Claude Code,                  Sentinel                          Ollama
+ Copilot, Cursor,                        │                                │
+ Windsurf, Cline,                        │                                │
+ Amazon Q, ...)                          │                                │
     │                                    │                                │
     │  PreToolUse event (stdin JSON)     │                                │
     ├───────────────────────────────────>│                                │
-    │                                    │  1. Parse event                │
+    │                                    │  1. Parse event (via tool_map) │
     │                                    │  2. Determine trigger type     │
     │                                    │     (file_write|bash|mcp)      │
     │                                    │  3. Glob-filter matching rules │
@@ -99,11 +102,45 @@ prompt: |                        # evaluation prompt with {{template_vars}}
 | `timeout_ms` | `5000` | Per-rule evaluation timeout |
 | `confidence_threshold` | `0.7` | Minimum confidence to count as violation |
 | `max_parallel` | `4` | Concurrent Ollama calls |
+| `ollama_concurrency` | `1` | Max concurrent Ollama HTTP calls (GPU-bound) |
 | `think` | `false` | Enable thinking mode (slower, more accurate) |
 | `fail_open` | `true` | Skip rule on error vs block |
 | `content_max_chars` | `800` | File content truncation in prompts |
 | `log_file` | `null` | JSONL telemetry path |
 | `rules_dir` | `rules` | Rules directory (relative to config dir) |
+| `tool_map` | *(see below)* | Tool name → trigger type mapping |
+| `mcp_prefix` | `mcp__` | Prefix for detecting MCP tool names |
+| `mcp_separator` | `__` | Separator for parsing MCP server/tool from tool name |
+
+### Multi-agent tool mapping
+
+Sentinel ships with built-in tool name mappings for multiple coding agents. The default `tool_map` recognizes tool names from Claude Code, Copilot, Cursor, Windsurf, Cline, and Amazon Q:
+
+| Agent | File write tools | Terminal tools |
+|---|---|---|
+| **Claude Code** | `Write`, `Edit`, `MultiEdit`, `NotebookEdit` | `Bash` |
+| **Copilot** (VS Code) | `create_file`, `replace_string_in_file`, `multi_replace_string_in_file` | `run_in_terminal` |
+| **Cursor** | `edit_file` | `run_terminal_cmd` |
+| **Windsurf** | `write_to_file`, `edit_file` | `run_command` |
+| **Cline** | `write_to_file`, `replace_in_file` | `execute_command` |
+| **Amazon Q** | `fs_write` | `execute_bash` |
+
+MCP tool detection uses a configurable prefix and separator. Defaults match Claude Code (`mcp__server__tool`). For Cursor, set:
+
+```yaml
+mcp_prefix: "mcp_"
+mcp_separator: "_"
+```
+
+To add custom tool names or override the defaults, provide a `tool_map` in your config:
+
+```yaml
+tool_map:
+  my_custom_write_tool: file_write
+  my_shell_tool: bash
+```
+
+Note: a custom `tool_map` **replaces** the defaults entirely. If you only need to add entries, copy the defaults from `sentinel.py` and append your additions.
 
 ## Telemetry format
 
