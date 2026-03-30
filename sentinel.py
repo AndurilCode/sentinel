@@ -27,9 +27,13 @@ from typing import Optional
 
 try:
     import yaml
-    HAS_YAML = True
 except ImportError:
-    HAS_YAML = False
+    import subprocess
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    import yaml
 
 # ── Defaults ────────────────────────────────────────────────────────
 
@@ -56,7 +60,7 @@ SYSTEM_PROMPT = (
 
 def _load_file(path: str) -> dict:
     with open(path, "r") as f:
-        if HAS_YAML and path.endswith((".yaml", ".yml")):
+        if path.endswith((".yaml", ".yml")):
             return yaml.safe_load(f) or {}
         return json.load(f)
 
