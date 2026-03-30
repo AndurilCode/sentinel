@@ -1,0 +1,42 @@
+---
+name: sentinel-config
+description: View or update Sentinel configuration
+user-invocable: true
+---
+
+# Sentinel Config
+
+View or update the Sentinel configuration in the current repository.
+
+## What to do
+
+1. Check that `.claude/sentinel/config.yaml` exists. If not, tell the user to run `/sentinel-init` first and stop.
+
+2. Read `.claude/sentinel/config.yaml`.
+
+3. If the user asked to view the config, show the current values and explain what each one does. Stop here.
+
+4. If the user asked to change something, use the Edit tool to update the specific value(s) in the config file. Preserve all comments. Do not rewrite the entire file.
+
+## Configuration reference
+
+| Key | Default | Description |
+|---|---|---|
+| `model` | `qwen3.5:4b` | Ollama model for evaluation |
+| `ollama_url` | `http://localhost:11434` | Ollama endpoint |
+| `timeout_ms` | `5000` | Per-rule evaluation timeout |
+| `confidence_threshold` | `0.7` | Minimum confidence to count as violation |
+| `max_parallel` | `4` | Concurrent Ollama calls |
+| `think` | `false` | Enable /think mode (slower, more accurate) |
+| `fail_open` | `true` | Skip rule on error vs block |
+| `content_max_chars` | `800` | File content truncation in prompts |
+| `log_file` | `null` | JSONL telemetry path |
+| `rules_dir` | `rules` | Rules directory (relative to config dir) |
+
+## Model recommendations
+
+| Hardware | Model | Notes |
+|---|---|---|
+| 8 GB RAM | `qwen3.5:4b` | Dense, ~3 GB at Q4 |
+| 16 GB RAM | `qwen3.5-35b-a3b` | MoE, 3B active, ~12 GB at Q4 |
+| 32 GB RAM | `qwen3.5:9b` | Dense, best sub-10B accuracy |
