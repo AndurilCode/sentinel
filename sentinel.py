@@ -692,7 +692,13 @@ def _project_root() -> str:
 
 def _session_dir(session_id: str, config: dict) -> str:
     safe_id = _sanitize_session_id(session_id)
-    return os.path.join(_project_root(), ".sentinel", "sessions", safe_id)
+    config_dir = _find_config_dir()
+    if config_dir:
+        # Place sessions dir as sibling to config: .claude/sentinel/../.sentinel/sessions/
+        project_root = os.path.dirname(os.path.dirname(config_dir))
+    else:
+        project_root = _project_root()
+    return os.path.join(project_root, ".sentinel", "sessions", safe_id)
 
 
 def _session_lock_path(session_id: str, config: dict) -> str:
