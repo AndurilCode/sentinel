@@ -33,5 +33,8 @@ prompt: |
   RESULT: {{tool_output}}
 
   If this looks like a releasable change (new feature, bug fix, or
-  schema change), remind to bump the version in both plugin files.
-  Respond with JSON: {"context": "your message (max 80 words)"}
+  schema change), write an ACTION REQUIRED instruction telling the
+  agent to bump the version BEFORE making any further edits. State
+  whether it is a PATCH, MINOR, or MAJOR bump and why.
+  Format: write as a direct imperative — not a suggestion or reminder.
+  Respond with JSON: {"context": "your instruction (max 80 words)"}
