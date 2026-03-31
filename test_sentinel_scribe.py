@@ -470,3 +470,129 @@ def test_observe_pipeline_no_convention(tmp_path, config_dir):
 
     obs_path = os.path.join(scribe_dir, "observations.jsonl")
     assert not os.path.exists(obs_path)
+
+
+def test_flush_processes_deferred(tmp_path, config_dir):
+    """Flush should process deferred observations."""
+    import sentinel_scribe
+
+    scribe_dir = str(tmp_path / "scribe")
+    deferred_dir = os.path.join(scribe_dir, "deferred")
+    os.makedirs(deferred_dir)
+
+    transcript = tmp_path / "transcript.jsonl"
+    with open(transcript, "w") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Should I delete the database?"}
+        ]}, "timestamp": "T1"}) + "\n")
+
+    deferred = {
+        "user_prompt": "no, never do that",
+        "transcript_path": str(transcript),
+        "session_id": "test",
+        "window_lines": ["[assistant] Should I delete the database?", "[human] no, never do that"],
+        "ts": "2026-03-31T10:00:00Z",
+    }
+    with open(os.path.join(deferred_dir, "1.json"), "w") as f:
+        json.dump(deferred, f)
+
+    config = sentinel_scribe.load_config(config_dir)
+    session_dir = str(tmp_path / "sessions" / "test")
+
+    extraction_response = json.dumps({"conventions": [{
+        "statement": "Never delete the database",
+        "scope_hint": "**",
+        "trigger_hint": "bash",
+        "confidence": 0.95,
+        "evidence": "no, never do that",
+    }]})
+    synthesis_response = """id: no-db-deletion
+trigger: bash
+severity: block
+scope:
+  - "*"
+prompt: |
+  Test {{command}}
+"""
+
+    call_count = {"n": 0}
+    def mock_ollama(prompt, model, cfg, think=False):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return extraction_response
+        return synthesis_response
+
+    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                sentinel_scribe.flush(
+                    config=config,
+                    config_dir=config_dir,
+                    scribe_dir=scribe_dir,
+                    session_dir=session_dir,
+                    session_id="test",
+                )
+
+    assert len(os.listdir(deferred_dir)) == 0
+
+
+def test_flush_no_deferred_is_noop(tmp_path, config_dir):
+    """Flush with no deferred files should do nothing."""
+    import sentinel_scribe
+    scribe_dir = str(tmp_path / "scribe")
+    os.makedirs(scribe_dir)
+    config = sentinel_scribe.load_config(config_dir)
+    session_dir = str(tmp_path / "sessions" / "test")
+    sentinel_scribe.flush(
+        config=config, config_dir=config_dir,
+        scribe_dir=scribe_dir, session_dir=session_dir,
+        session_id="test",
+    )
+
+
+def test_learn_scans_documentation(tmp_path, config_dir):
+    """Learn should scan doc files and extract conventions."""
+    import sentinel_scribe
+
+    project_root = os.path.dirname(os.path.dirname(config_dir))
+    claude_md = os.path.join(project_root, "CLAUDE.md")
+    with open(claude_md, "w") as f:
+        f.write("# Rules\n\nNever commit .env files.\nAlways run tests before pushing.")
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+
+    extraction_response = json.dumps({"conventions": [{
+        "statement": "Never commit .env files",
+        "scope_hint": "**/.env",
+        "trigger_hint": "file_write",
+        "confidence": 0.95,
+        "evidence": "Never commit .env files",
+    }]})
+    synthesis_response = """id: no-env-commit
+trigger: file_write
+severity: block
+scope:
+  - "**/.env"
+prompt: |
+  Test {{file_path}}
+"""
+
+    call_count = {"n": 0}
+    def mock_ollama(prompt, model, cfg, think=False):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return extraction_response
+        return synthesis_response
+
+    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                result = sentinel_scribe.learn(
+                    config=config, config_dir=config_dir,
+                    scribe_dir=scribe_dir, session_dir=session_dir,
+                )
+
+    assert result["files_scanned"] >= 1
+    assert result["conventions_found"] >= 1

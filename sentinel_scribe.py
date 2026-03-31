@@ -649,3 +649,244 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
             }
             write_draft(drafts_dir, rule, draft_meta)
             observation["drafted"] = True
+
+
+# ── Flush mode ──────────────────────────────────────────────────────
+
+def flush(config: dict, config_dir: str, scribe_dir: str,
+          session_dir: str, session_id: str) -> None:
+    """Process deferred observations from lock timeouts."""
+    deferred_dir = os.path.join(scribe_dir, "deferred")
+    if not os.path.isdir(deferred_dir):
+        return
+
+    files = sorted(os.listdir(deferred_dir))
+    for fname in files:
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(deferred_dir, fname)
+        try:
+            with open(path) as f:
+                deferred = json.load(f)
+            observe(
+                user_prompt=deferred.get("user_prompt", ""),
+                transcript_path=deferred.get("transcript_path", ""),
+                session_id=deferred.get("session_id", session_id),
+                config=config,
+                config_dir=config_dir,
+                scribe_dir=scribe_dir,
+                session_dir=session_dir,
+            )
+            os.unlink(path)
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+# ── Learn mode ──────────────────────────────────────────────────────
+
+def _find_doc_files(project_root: str, doc_globs: list[str]) -> list[str]:
+    """Find documentation files matching configured globs."""
+    found = []
+    for pattern in doc_globs:
+        if "**" in pattern:
+            for root, dirs, files in os.walk(project_root):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for fname in files:
+                    rel = os.path.relpath(os.path.join(root, fname), project_root)
+                    match_pattern = pattern.replace("**/", "")
+                    if fnmatch(fname, match_pattern) or fnmatch(rel, pattern):
+                        found.append(os.path.join(root, fname))
+        else:
+            full = os.path.join(project_root, pattern)
+            if os.path.exists(full):
+                found.append(full)
+    return found
+
+
+def learn(config: dict, config_dir: str, scribe_dir: str,
+          session_dir: str) -> dict:
+    """Scan documentation files and extract conventions."""
+    from sentinel_lock import acquire_lock, release_lock, LockPriority
+
+    scribe_cfg = config.get("scribe", SCRIBE_DEFAULTS)
+    model = scribe_cfg.get("model") or config.get("model", "gemma3:4b")
+    guidance = scribe_cfg.get("guidance")
+    thresholds = scribe_cfg.get("thresholds", {})
+    extraction_confidence = thresholds.get("extraction_confidence", 0.7)
+    draft_confidence = thresholds.get("draft_confidence", 0.7)
+    doc_globs = scribe_cfg.get("doc_globs", SCRIBE_DEFAULTS["doc_globs"])
+
+    project_root = os.path.dirname(os.path.dirname(config_dir))
+    doc_files = _find_doc_files(project_root, doc_globs)
+
+    result = {"files_scanned": 0, "conventions_found": 0, "drafts_created": 0}
+    lock_path = os.path.join(session_dir, "ollama.lock")
+    os.makedirs(session_dir, exist_ok=True)
+
+    for doc_path in doc_files:
+        try:
+            with open(doc_path) as f:
+                content = f.read()
+        except OSError:
+            continue
+
+        if not content.strip():
+            continue
+
+        result["files_scanned"] += 1
+        source_type = os.path.basename(doc_path)
+
+        max_chunk = 3000
+        chunks = [content[i:i + max_chunk] for i in range(0, len(content), max_chunk)]
+
+        for chunk in chunks:
+            fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+            try:
+                prompt = build_doc_extraction_prompt(chunk, source_type, guidance)
+                response = call_ollama(prompt, model, config, think=False)
+            except Exception:
+                continue
+            finally:
+                release_lock(fd)
+
+            conventions = parse_extraction_response(response)
+            for conv in conventions:
+                confidence = conv.get("confidence", 0.0)
+                if confidence < extraction_confidence:
+                    continue
+
+                result["conventions_found"] += 1
+                observation = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "source": "documentation",
+                    "session_id": "learn",
+                    "statement": conv.get("statement", ""),
+                    "scope_hint": conv.get("scope_hint", "**"),
+                    "trigger_hint": conv.get("trigger_hint", "unknown"),
+                    "confidence": confidence,
+                    "evidence": conv.get("evidence", ""),
+                    "drafted": False,
+                }
+                append_observation(scribe_dir, observation)
+
+                if confidence < draft_confidence:
+                    continue
+
+                scope_hint = conv.get("scope_hint", "**")
+                trigger_hint = conv.get("trigger_hint", "unknown")
+                rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
+                drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
+
+                active_rules = load_active_rules(rules_dir)
+                if is_covered_by_rules(active_rules, scope_hint, trigger_hint):
+                    continue
+                if is_dismissed(scribe_dir, scope_hint, trigger_hint):
+                    continue
+                if draft_exists(drafts_dir, scope_hint, trigger_hint):
+                    continue
+
+                matched_files = _glob_repo_files(scope_hint, project_root)
+                sample_rules = active_rules[:3]
+
+                fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+                try:
+                    synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
+                    synth_response = call_ollama(synth_prompt, model, config, think=True)
+                except Exception:
+                    continue
+                finally:
+                    release_lock(fd2)
+
+                rule = parse_synthesis_response(synth_response)
+                if rule and rule.get("prompt"):
+                    rule.setdefault("id", re.sub(r'[^a-z0-9-]', '-',
+                                    conv["statement"][:40].lower().strip()).strip("-"))
+                    draft_meta = {
+                        "source": "documentation",
+                        "observed": 1,
+                        "first_seen": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "evidence": [conv.get("evidence", "")],
+                        "confidence": confidence,
+                        "synthesized": datetime.now(timezone.utc).isoformat(),
+                        "model": model,
+                    }
+                    write_draft(drafts_dir, rule, draft_meta)
+                    result["drafts_created"] += 1
+
+    return result
+
+
+# ── Main entry point ────────────────────────────────────────────────
+
+def main():
+    config_dir = _find_config_dir()
+    if not config_dir:
+        sys.exit(0)
+
+    config = load_config(config_dir)
+    scribe_cfg = config.get("scribe", {})
+    if not scribe_cfg.get("enabled", True):
+        sys.exit(0)
+
+    project_root = os.path.dirname(os.path.dirname(config_dir))
+    scribe_d = _scribe_dir(config_dir)
+
+    if "--observe" in sys.argv:
+        if not scribe_cfg.get("sources", {}).get("user_prompts", True):
+            sys.exit(0)
+        try:
+            raw_data = json.loads(sys.stdin.read())
+        except Exception:
+            sys.exit(0)
+
+        session_id = raw_data.get("session_id", "unknown")
+        user_prompt = raw_data.get("user_prompt", "")
+        transcript_path = raw_data.get("transcript_path", "")
+        if not user_prompt:
+            sys.exit(0)
+
+        session_d = _session_dir(session_id, config_dir)
+        observe(
+            user_prompt=user_prompt,
+            transcript_path=transcript_path,
+            session_id=session_id,
+            config=config,
+            config_dir=config_dir,
+            scribe_dir=scribe_d,
+            session_dir=session_d,
+        )
+
+    elif "--flush" in sys.argv:
+        try:
+            raw_data = json.loads(sys.stdin.read())
+        except Exception:
+            raw_data = {}
+        session_id = raw_data.get("session_id", "unknown")
+        session_d = _session_dir(session_id, config_dir)
+        flush(
+            config=config,
+            config_dir=config_dir,
+            scribe_dir=scribe_d,
+            session_dir=session_d,
+            session_id=session_id,
+        )
+
+    elif "--learn" in sys.argv:
+        session_d = os.path.join(project_root, ".sentinel", "sessions", "learn")
+        os.makedirs(session_d, exist_ok=True)
+        result = learn(
+            config=config,
+            config_dir=config_dir,
+            scribe_dir=scribe_d,
+            session_dir=session_d,
+        )
+        print(json.dumps(result))
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
