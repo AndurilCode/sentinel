@@ -19,17 +19,59 @@ Rules are YAML files in `.claude/sentinel/rules/`. Each rule has these fields:
 ```yaml
 id: rule-name                    # unique identifier (defaults to filename stem)
 trigger: file_write              # file_write | bash | mcp | any
-severity: block                  # block (exit 2) | warn (exit 0 + warning)
+severity: block                  # block (deny) | warn (allow + warning) | info (context only)
 scope:                           # glob patterns — rule fires if any match
   - "src/core/billing/**"
 exclude:                         # glob patterns — exempt even if scope matches
   - "**/*.test.ts"
 model: "gemma3:12b"             # optional per-rule model override
+post: true                       # (info only) opt-in to PostToolUse LLM synthesis
 prompt: |                        # evaluation prompt with {{template_vars}}
   CONTEXT: {{action_summary}}
   RULE: ...
   Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
 ```
+
+### Info severity
+
+`severity: info` rules provide contextual advice to the agent without blocking or warning. Two modes:
+
+**PreToolUse static** — the `prompt` field is rendered with template variables and returned directly as `additionalContext`. No LLM call, zero latency.
+
+```yaml
+id: payments-ownership
+trigger: file_write
+severity: info
+scope:
+  - "src/payments/**"
+prompt: |
+  This directory is owned by the Payments team.
+  Changes require review from @payments-team.
+  Slack: #payments-eng
+```
+
+**PostToolUse synthesized** — add `post: true` to opt the rule into PostToolUse evaluation. The LLM receives session context + tool output + domain knowledge and responds with `{"context": "..."}`.
+
+```yaml
+id: migration-awareness
+trigger: file_write
+severity: info
+post: true
+scope:
+  - "**/migrations/**"
+prompt: |
+  DOMAIN KNOWLEDGE: This codebase uses a payments microservice.
+  - OpenAPI spec at api/v2/openapi.yaml must reflect DB changes
+  - CHANGELOG.md must be updated for any migration
+
+  Based on the session context and the tool action,
+  provide a brief, relevant contextual reminder.
+  Respond with JSON: {"context": "your message (max 80 words)"}
+```
+
+New template variables available in PostToolUse rules:
+- `{{tool_output}}` — the tool's response/result
+- `{{session_context}}` — the accumulator's latest rolling summary of the session
 
 ### Trigger types and their template variables
 
@@ -61,9 +103,10 @@ prompt: |                        # evaluation prompt with {{template_vars}}
 3. **Use exclude patterns.** Test files, mocks, and examples rarely need protection.
 4. **Start with `severity: warn`.** Promote to `block` after verifying precision via telemetry.
 5. **Keep prompts focused.** The LLM does binary classification on one rule. Give it clear context and a clear question.
-6. **End every prompt with:** `Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}`
+6. **End every prompt with the correct response format.** For `block`/`warn` rules: `Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}`. For `info` rules with `post: true`: `Respond with JSON: {"context": "your message (max 80 words)"}`.
 7. **Don't use LLM for deterministic checks.** If a rule is purely about file paths, use Claude Code permissions instead.
 8. **Match model size to severity.** `block` rules prevent the agent from acting — accuracy matters more than speed. Use a larger model (e.g., `model: "gemma3:12b"`) for block rules that evaluate content semantically (secrets, PII, SQL safety). Leave `warn` rules and simple pattern rules on the default small model for speed.
+9. **Use `info` for context, not enforcement.** Info rules provide knowledge that helps the agent make better decisions. Use for ownership info, related-file reminders, policy awareness. Add `post: true` when the advice needs to consider what the tool actually did.
 
 ### Examples
 
@@ -84,7 +127,7 @@ Ask 2-4 targeted follow-up questions, one at a time. Focus on:
 - **Trigger type** — if not obvious from step 1. Offer: file_write, bash, mcp, or any.
 - **Scope** — which file paths, commands, or MCP tools should this rule apply to? Suggest glob patterns based on the codebase structure.
 - **Excludes** — any exceptions? (test files, specific directories, dry-run commands)
-- **Severity** — should violations block the action or just warn? Recommend starting with `warn`.
+- **Severity** — should violations block the action, warn, or just provide context? Recommend starting with `warn`. Use `info` for ownership info, related-file reminders, or policy awareness that should never block.
 
 Do not ask about prompt template details. Keep it focused. If the user picks `severity: block` and the rule evaluates content semantically (not just file paths), recommend adding `model: "gemma3:12b"` for better accuracy and explain the speed tradeoff (~2x latency).
 

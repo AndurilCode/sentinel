@@ -32,6 +32,11 @@ View or update the Sentinel configuration in the current repository.
 | `content_max_chars` | `800` | File content truncation in prompts |
 | `log_file` | `null` | JSONL telemetry path |
 | `rules_dir` | `rules` | Rules directory (relative to config dir) |
+| `context.enabled` | `true` | Enable session context accumulator |
+| `context.model` | `gemma3:4b` | Ollama model for accumulator |
+| `context.min_events` | `3` | Minimum events before accumulator update |
+| `context.lock_timeout_s` | `30` | Max wait for GPU lock |
+| `context.summary_max_words` | `150` | Token budget for rolling summary |
 
 ## Model recommendations
 

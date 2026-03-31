@@ -111,17 +111,32 @@ log_file: ".claude/sentinel/sentinel.log"
 
 # Rules directory (relative to this config's directory or absolute).
 rules_dir: "rules"
+
+# Session context accumulator for info severity rules.
+# Maintains a rolling summary of the agent's session by reading
+# the transcript. Used by PostToolUse info rules with post: true.
+context:
+  enabled: true
+  model: "gemma3:4b"
+  min_events: 3
+  lock_timeout_s: 30
+  summary_max_words: 150
 ```
 
 ### Step 7: Create the rules directory
 
 Create `.claude/sentinel/rules/.gitkeep` (empty file) so the rules directory is tracked by git.
 
-### Step 8: Install hooks (Copilot CLI only)
+### Step 8: Install hooks
 
-**Skip this step if running on Claude Code** — Claude Code auto-registers hooks from the plugin's `hooks/hooks.json`.
+**Claude Code** — Claude Code auto-registers hooks from the plugin's `hooks/hooks.json`. This includes:
+- **PreToolUse**: `sentinel.py` — evaluates `block`/`warn` rules and fires `info` static rules before each tool call.
+- **PostToolUse**: `sentinel.py --post` — fires `info` rules with `post: true` after each tool call, providing LLM-synthesized context.
+- **Stop**: `sentinel_context.py` (async) — updates the rolling session summary after each agent turn, used by PostToolUse synthesized rules.
 
-For Copilot CLI, hooks must be installed manually. Create `.github/hooks/sentinel.json`:
+No manual hook installation is needed for Claude Code.
+
+**Copilot CLI** — hooks must be installed manually. Copilot CLI only supports PreToolUse; PostToolUse and Stop hooks are not available. Create `.github/hooks/sentinel.json`:
 
 ```bash
 mkdir -p .github/hooks
@@ -144,6 +159,8 @@ Then write `.github/hooks/sentinel.json` with this content, replacing `SENTINEL_
 }
 ```
 
+Note: when using Copilot CLI, `info` rules with `post: true` will not fire (no PostToolUse hook). Static `info` rules (without `post: true`) will fire normally on PreToolUse.
+
 To find the correct path, use the directory where this skill is running from (`${CLAUDE_PLUGIN_ROOT}` if available, otherwise ask the user where they cloned/installed Sentinel).
 
 ### Step 9: Verify end-to-end
@@ -164,6 +181,6 @@ Tell the user:
 
 If Copilot CLI was detected, also tell the user:
 
-> Copilot CLI hooks installed at `.github/hooks/sentinel.json`. The `preToolUse` hook will evaluate rules on every tool call.
+> Copilot CLI hooks installed at `.github/hooks/sentinel.json`. The `preToolUse` hook will evaluate rules on every tool call. Note: `info` rules with `post: true` require PostToolUse hooks, which are not supported by Copilot CLI — those rules will be skipped.
 
 Do NOT copy example rules into the repo. The rules directory starts empty.
