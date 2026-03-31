@@ -22,6 +22,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel_scribe.py --observe",
+            "timeout": 15000
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -30,6 +41,12 @@
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel_context.py",
             "async": true,
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel_scribe.py --flush",
+            "async": true,
+            "timeout": 30
           }
         ]
       }
