@@ -596,3 +596,79 @@ prompt: |
 
     assert result["files_scanned"] >= 1
     assert result["conventions_found"] >= 1
+
+
+def test_check_pending_drafts_returns_notification(config_dir, tmp_path):
+    """Should return notification text when recent drafts exist."""
+    import sentinel_scribe
+    drafts_dir = os.path.join(config_dir, "drafts")
+    draft = {
+        "id": "test-draft",
+        "trigger": "file_write",
+        "scope": ["src/**"],
+        "prompt": "test",
+        "_draft": {
+            "source": "user_prompt",
+            "synthesized": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    with open(os.path.join(drafts_dir, "test-draft.draft.yaml"), "w") as f:
+        yaml.dump(draft, f)
+
+    session_dir = str(tmp_path / "sessions" / "test")
+    os.makedirs(session_dir, exist_ok=True)
+
+    notification = sentinel_scribe.check_pending_drafts(
+        drafts_dir=drafts_dir,
+        session_dir=session_dir,
+        max_age_days=7,
+    )
+    assert notification is not None
+    assert "draft" in notification.lower()
+    assert "/sentinel-drafts" in notification
+
+
+def test_check_pending_drafts_skips_if_already_notified(config_dir, tmp_path):
+    """Should return None if already notified this session."""
+    import sentinel_scribe
+    drafts_dir = os.path.join(config_dir, "drafts")
+    draft = {
+        "id": "test-draft",
+        "trigger": "file_write",
+        "scope": ["src/**"],
+        "prompt": "test",
+        "_draft": {"source": "user_prompt", "synthesized": datetime.now(timezone.utc).isoformat()},
+    }
+    with open(os.path.join(drafts_dir, "test-draft.draft.yaml"), "w") as f:
+        yaml.dump(draft, f)
+
+    session_dir = str(tmp_path / "sessions" / "test")
+    os.makedirs(session_dir, exist_ok=True)
+
+    n1 = sentinel_scribe.check_pending_drafts(drafts_dir, session_dir, 7)
+    assert n1 is not None
+
+    n2 = sentinel_scribe.check_pending_drafts(drafts_dir, session_dir, 7)
+    assert n2 is None
+
+
+def test_check_pending_drafts_skips_old_drafts(config_dir, tmp_path):
+    """Should not notify for drafts older than max_age_days."""
+    import sentinel_scribe
+    drafts_dir = os.path.join(config_dir, "drafts")
+    old_time = "2026-03-01T10:00:00+00:00"
+    draft = {
+        "id": "old-draft",
+        "trigger": "bash",
+        "scope": ["*"],
+        "prompt": "test",
+        "_draft": {"source": "user_prompt", "synthesized": old_time},
+    }
+    with open(os.path.join(drafts_dir, "old-draft.draft.yaml"), "w") as f:
+        yaml.dump(draft, f)
+
+    session_dir = str(tmp_path / "sessions" / "test")
+    os.makedirs(session_dir, exist_ok=True)
+
+    notification = sentinel_scribe.check_pending_drafts(drafts_dir, session_dir, 7)
+    assert notification is None

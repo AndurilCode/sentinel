@@ -651,6 +651,51 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
             observation["drafted"] = True
 
 
+# ── Draft notification ──────────────────────────────────────────────
+
+def check_pending_drafts(drafts_dir: str, session_dir: str,
+                          max_age_days: int = 7) -> Optional[str]:
+    """Check for recent drafts and return a notification string, or None.
+
+    Returns notification only once per session (tracked via scribe_notified flag file).
+    """
+    notified_path = os.path.join(session_dir, "scribe_notified")
+    if os.path.exists(notified_path):
+        return None
+
+    if not os.path.isdir(drafts_dir):
+        return None
+
+    now = datetime.now(timezone.utc)
+    recent_count = 0
+
+    for entry in os.listdir(drafts_dir):
+        if not entry.endswith(".draft.yaml"):
+            continue
+        try:
+            with open(os.path.join(drafts_dir, entry)) as f:
+                draft = yaml.safe_load(f) or {}
+            synthesized = draft.get("_draft", {}).get("synthesized", "")
+            if not synthesized:
+                continue
+            draft_time = datetime.fromisoformat(synthesized)
+            age_days = (now - draft_time).days
+            if age_days <= max_age_days:
+                recent_count += 1
+        except Exception:
+            continue
+
+    if recent_count == 0:
+        return None
+
+    os.makedirs(session_dir, exist_ok=True)
+    with open(notified_path, "w") as f:
+        f.write(datetime.now(timezone.utc).isoformat())
+
+    plural = "s" if recent_count > 1 else ""
+    return f"Sentinel Scribe: {recent_count} new draft rule{plural} pending review. Run /sentinel-drafts to see them."
+
+
 # ── Flush mode ──────────────────────────────────────────────────────
 
 def flush(config: dict, config_dir: str, scribe_dir: str,
