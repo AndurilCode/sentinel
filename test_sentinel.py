@@ -916,3 +916,53 @@ class TestInfoRules:
             output = json.loads(result)
             assert "permissionDecision" not in output.get("hookSpecificOutput", {}) or \
                    output["hookSpecificOutput"].get("permissionDecision") != "deny"
+
+    def test_info_dedup_suppresses_repeat(self, tmp_path):
+        """Same info rule + same target within TTL should be suppressed."""
+        config_dir = tmp_path / ".claude" / "sentinel"
+        rules_dir = config_dir / "rules"
+        rules_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text("model: gemma3:4b\n")
+        (rules_dir / "ownership.yaml").write_text(
+            'id: ownership\ntrigger: file_write\nseverity: info\nscope:\n  - "src/payments/**"\nprompt: |\n  Owned by Payments team.\n'
+        )
+        event_json = json.dumps({
+            "session_id": "dedup-test",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "src/payments/charge.py", "content": "x = 1"}
+        })
+
+        # First call — should produce output
+        result1 = run_sentinel(event_json, config_dir=str(config_dir))
+        assert result1.strip(), "First call should produce info output"
+
+        # Second call with same rule + same target — should be suppressed
+        result2 = run_sentinel(event_json, config_dir=str(config_dir))
+        assert not result2.strip(), "Duplicate call should be suppressed"
+
+    def test_info_dedup_allows_different_target(self, tmp_path):
+        """Same info rule but different target should NOT be suppressed."""
+        config_dir = tmp_path / ".claude" / "sentinel"
+        rules_dir = config_dir / "rules"
+        rules_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text("model: gemma3:4b\n")
+        (rules_dir / "ownership.yaml").write_text(
+            'id: ownership\ntrigger: file_write\nseverity: info\nscope:\n  - "src/payments/**"\nprompt: |\n  Owned by Payments team.\n'
+        )
+
+        event1 = json.dumps({
+            "session_id": "dedup-test-2",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "src/payments/charge.py", "content": "x = 1"}
+        })
+        event2 = json.dumps({
+            "session_id": "dedup-test-2",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "src/payments/refund.py", "content": "y = 2"}
+        })
+
+        result1 = run_sentinel(event1, config_dir=str(config_dir))
+        assert result1.strip(), "First target should produce output"
+
+        result2 = run_sentinel(event2, config_dir=str(config_dir))
+        assert result2.strip(), "Different target should also produce output"

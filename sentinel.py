@@ -711,6 +711,53 @@ def _read_session_context(session_id: str, config: dict) -> Optional[dict]:
         return None
 
 
+# ── Info deduplication ─────────────────────────────────────────────
+
+_DEDUP_TTL_S = 30  # suppress duplicate info for same (rule, target) within this window
+
+
+def _dedup_dir(session_id: str) -> str:
+    """Dedup cache dir, co-located with sentinel config."""
+    config_dir = _find_config_dir()
+    if not config_dir:
+        return ""
+    safe_id = _sanitize_session_id(session_id)
+    d = os.path.join(config_dir, "dedup", safe_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _dedup_check(session_id: str, rule_id: str, target: str,
+                 config: dict) -> bool:
+    """Return True if this (rule, target) was seen recently and should be skipped."""
+    d = _dedup_dir(session_id)
+    if not d:
+        return False
+    path = os.path.join(d, "info_dedup.json")
+    now = time.time()
+    cache = {}
+    try:
+        with open(path) as f:
+            cache = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    key = f"{rule_id}:{target}"
+    last_seen = cache.get(key, 0)
+    if now - last_seen < _DEDUP_TTL_S:
+        return True  # duplicate, skip
+
+    # Update cache, prune expired entries
+    cache = {k: v for k, v in cache.items() if now - v < _DEDUP_TTL_S}
+    cache[key] = now
+    try:
+        with open(path, "w") as f:
+            json.dump(cache, f)
+    except OSError:
+        pass
+    return False
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def _ollama_reachable(config: dict) -> bool:
@@ -791,8 +838,13 @@ def main_pre(raw_data: dict, rules: list, config: dict):
     judge_rules = [r for r in matching if r.get("severity") != "info"]
 
     # Render info rules as static context (no Ollama required)
+    # Deduplicate: skip if same (rule, target) was seen recently
+    session_id = raw_data.get("session_id", "")
+    target = (event.get("match_targets") or [""])[0]
     info_contexts = []
     for r in info_rules:
+        if session_id and _dedup_check(session_id, r["id"], target, config):
+            continue
         rendered = render_prompt(r, event, config)
         info_contexts.append(f"[{r['id']}] {rendered}")
 
@@ -866,8 +918,15 @@ def main_post(raw_data: dict, rules: list, config: dict):
     event["template_vars"]["session_context"] = json.dumps(
         session_context) if session_context else "{}"
 
+    # Deduplicate: skip if same (rule, target) was seen recently
+    target = (event.get("match_targets") or [""])[0]
+    deduped = [r for r in matching
+               if not _dedup_check(session_id, r["id"], target, config)]
+    if not deduped:
+        sys.exit(0)
+
     contexts = []
-    for r in matching:
+    for r in deduped:
         result = evaluate_info_rule(r, event, config, session_id)
         if result:
             contexts.append(result)
