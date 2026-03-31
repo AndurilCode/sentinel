@@ -1,0 +1,18 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: payments-ownership
+# Trigger: file_write
+# Provides ownership context when touching payments code.
+# ─────────────────────────────────────────────────────────────
+
+id: payments-ownership
+trigger: file_write
+severity: info
+
+scope:
+  - "src/payments/**"
+  - "**/billing/**"
+
+prompt: |
+  This directory is owned by the Payments team (@payments-team).
+  Changes require review in #payments-eng.
+  FILE: {{file_path}}

@@ -1,0 +1,31 @@
+# ─────────────────────────────────────────────────────────────
+# Rule: migration-awareness
+# Trigger: file_write
+# Provides context-aware reminders after writing migration files.
+# ─────────────────────────────────────────────────────────────
+
+id: migration-awareness
+trigger: file_write
+severity: info
+post: true
+
+scope:
+  - "**/migrations/**"
+  - "**/migrate/**"
+
+prompt: |
+  DOMAIN KNOWLEDGE: This project follows these migration conventions:
+  - API schema files (openapi.yaml) must reflect DB changes
+  - CHANGELOG.md must be updated for every migration
+  - Migrations that add columns should specify defaults for backfill
+
+  SESSION CONTEXT:
+  {{session_context}}
+
+  The agent just wrote a migration file:
+  FILE: {{file_path}}
+  RESULT: {{tool_output}}
+
+  Based on the domain knowledge and session context, provide a brief,
+  relevant reminder of what else may need updating.
+  Respond with JSON: {"context": "your message (max 80 words)"}
