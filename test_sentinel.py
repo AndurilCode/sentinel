@@ -697,6 +697,53 @@ class TestValidateRule:
         warnings = sentinel.validate_rule({"id": "Bad Rule", "prompt": "x"}, "bad.yaml")
         assert any("kebab-case" in w for w in warnings)
 
+    def test_info_severity_is_valid(self):
+        """severity: info should be accepted without validation warnings."""
+        rule = {
+            "prompt": "test prompt",
+            "trigger": "file_write",
+            "severity": "info",
+            "scope": ["src/**"],
+        }
+        warnings = sentinel.validate_rule(rule, "test.yaml")
+        assert not any("severity" in w for w in warnings)
+
+    def test_info_post_field_accepted(self):
+        """post: true should not produce validation warnings."""
+        rule = {
+            "prompt": "test prompt",
+            "trigger": "file_write",
+            "severity": "info",
+            "post": True,
+            "scope": ["src/**"],
+        }
+        warnings = sentinel.validate_rule(rule, "test.yaml")
+        assert not warnings
+
+    def test_info_post_requires_info_severity(self):
+        """post: true on a block/warn rule should produce a warning."""
+        rule = {
+            "prompt": "test prompt",
+            "trigger": "file_write",
+            "severity": "block",
+            "post": True,
+            "scope": ["src/**"],
+        }
+        warnings = sentinel.validate_rule(rule, "test.yaml")
+        assert any("post" in w for w in warnings)
+
+    def test_info_post_template_vars_accepted(self):
+        """{{tool_output}} and {{session_context}} should be valid for info post rules."""
+        rule = {
+            "prompt": "{{tool_output}} {{session_context}} check this",
+            "trigger": "file_write",
+            "severity": "info",
+            "post": True,
+            "scope": ["src/**"],
+        }
+        warnings = sentinel.validate_rule(rule, "test.yaml")
+        assert not any("template variable" in w for w in warnings)
+
     def test_kebab_case_id_ok(self):
         warnings = sentinel.validate_rule({"id": "good-rule", "prompt": "x"}, "ok.yaml")
         assert not any("kebab-case" in w for w in warnings)

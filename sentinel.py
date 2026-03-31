@@ -98,7 +98,7 @@ SYSTEM_PROMPT = (
 # ── Rule validation ────────────────────────────────────────────────
 
 VALID_TRIGGERS = {"file_write", "bash", "mcp", "any"}
-VALID_SEVERITIES = {"block", "warn"}
+VALID_SEVERITIES = {"block", "warn", "info"}
 
 TEMPLATE_VARS_BY_TRIGGER = {
     "file_write": {"file_path", "content_snippet", "content_length", "action_summary", "tool_name", "trigger"},
@@ -106,6 +106,7 @@ TEMPLATE_VARS_BY_TRIGGER = {
     "mcp":        {"server_name", "mcp_tool", "mcp_arguments", "action_summary", "tool_name", "trigger"},
 }
 ALL_TEMPLATE_VARS = set().union(*TEMPLATE_VARS_BY_TRIGGER.values())
+POST_TEMPLATE_VARS = {"tool_output", "session_context"}  # additional vars for info post rules
 
 
 def validate_rule(rule: dict, filepath: str) -> list[str]:
@@ -127,6 +128,10 @@ def validate_rule(rule: dict, filepath: str) -> list[str]:
     if severity is not None and severity not in VALID_SEVERITIES:
         warnings.append(f"{fname}: unknown severity '{severity}' (valid: {', '.join(sorted(VALID_SEVERITIES))})")
 
+    # 3b. post: true only valid with severity: info
+    if rule.get("post") and severity and severity != "info":
+        warnings.append(f"{fname}: 'post: true' is only valid with severity: info")
+
     # 4. Scope must be a list
     scope = rule.get("scope")
     if scope is not None and not isinstance(scope, list):
@@ -146,6 +151,9 @@ def validate_rule(rule: dict, filepath: str) -> list[str]:
             valid_vars = ALL_TEMPLATE_VARS
         else:
             valid_vars = TEMPLATE_VARS_BY_TRIGGER[trigger_val]
+        # Info post rules can use additional template vars
+        if rule.get("severity") == "info" and rule.get("post"):
+            valid_vars = valid_vars | POST_TEMPLATE_VARS
         unknown = used_vars - valid_vars
         if unknown:
             warnings.append(f"{fname}: unknown template variable(s): {', '.join(sorted(unknown))}")
