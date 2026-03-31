@@ -515,3 +515,137 @@ def parse_synthesis_response(response: str) -> Optional[dict]:
     except yaml.YAMLError:
         pass
     return None
+
+
+# ── Observe pipeline ────────────────────────────────────────────────
+
+def _glob_repo_files(scope_hint: str, project_root: str) -> list[str]:
+    """Find files matching scope_hint in the repo."""
+    matched = []
+    pattern = scope_hint
+    if not pattern.endswith("*"):
+        pattern = pattern.rstrip("/") + "/**"
+    for root, dirs, files in os.walk(project_root):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "venv", ".venv", "__pycache__")]
+        for fname in files:
+            rel = os.path.relpath(os.path.join(root, fname), project_root)
+            if fnmatch(rel, pattern):
+                matched.append(rel)
+            if len(matched) >= 20:
+                return matched
+    return matched
+
+
+def observe(user_prompt: str, transcript_path: str, session_id: str,
+            config: dict, config_dir: str, scribe_dir: str,
+            session_dir: str) -> None:
+    """Full --observe pipeline: extract convention from human prompt, optionally synthesize draft."""
+    from sentinel_lock import acquire_lock, release_lock, LockPriority
+
+    scribe_cfg = config.get("scribe", SCRIBE_DEFAULTS)
+    model = scribe_cfg.get("model") or config.get("model", "gemma3:4b")
+    guidance = scribe_cfg.get("guidance")
+    thresholds = scribe_cfg.get("thresholds", {})
+    extraction_confidence = thresholds.get("extraction_confidence", 0.7)
+    draft_confidence = thresholds.get("draft_confidence", 0.7)
+
+    # 1. Build context window from transcript
+    max_events = scribe_cfg.get("context_window_before", 5)
+    window_lines = build_context_window(transcript_path, max_events=max_events)
+    window_lines.append(f"[human] {user_prompt[:300]}")
+
+    # 2. Acquire GPU lock (P3)
+    lock_path = os.path.join(session_dir, "ollama.lock")
+    os.makedirs(session_dir, exist_ok=True)
+    fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+    if fd is None:
+        deferred_dir = os.path.join(scribe_dir, "deferred")
+        os.makedirs(deferred_dir, exist_ok=True)
+        deferred = {
+            "user_prompt": user_prompt[:300],
+            "transcript_path": transcript_path,
+            "session_id": session_id,
+            "window_lines": window_lines,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        deferred_path = os.path.join(deferred_dir, f"{int(time.time() * 1000)}.json")
+        with open(deferred_path, "w") as f:
+            json.dump(deferred, f)
+        return
+
+    try:
+        # 3. SLM classify + extract
+        prompt = build_human_extraction_prompt(window_lines, guidance)
+        response = call_ollama(prompt, model, config, think=False)
+    except Exception:
+        return
+    finally:
+        release_lock(fd)
+
+    conventions = parse_extraction_response(response)
+    if not conventions:
+        return
+
+    # 4. Process each extracted convention
+    for conv in conventions:
+        confidence = conv.get("confidence", 0.0)
+        if confidence < extraction_confidence:
+            continue
+
+        observation = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "source": "user_prompt",
+            "session_id": session_id,
+            "statement": conv.get("statement", ""),
+            "scope_hint": conv.get("scope_hint", "**"),
+            "trigger_hint": conv.get("trigger_hint", "unknown"),
+            "confidence": confidence,
+            "evidence": conv.get("evidence", ""),
+            "drafted": False,
+        }
+        append_observation(scribe_dir, observation)
+
+        if confidence < draft_confidence:
+            continue
+
+        scope_hint = conv.get("scope_hint", "**")
+        trigger_hint = conv.get("trigger_hint", "unknown")
+        rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
+        drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
+
+        active_rules = load_active_rules(rules_dir)
+        if is_covered_by_rules(active_rules, scope_hint, trigger_hint):
+            continue
+        if is_dismissed(scribe_dir, scope_hint, trigger_hint):
+            continue
+        if draft_exists(drafts_dir, scope_hint, trigger_hint):
+            continue
+
+        project_root = os.path.dirname(os.path.dirname(config_dir))
+        matched_files = _glob_repo_files(scope_hint, project_root)
+        sample_rules = active_rules[:3]
+
+        fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+        try:
+            synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
+            synth_response = call_ollama(synth_prompt, model, config, think=True)
+        except Exception:
+            continue
+        finally:
+            release_lock(fd2)
+
+        rule = parse_synthesis_response(synth_response)
+        if rule and rule.get("prompt"):
+            rule.setdefault("id", re.sub(r'[^a-z0-9-]', '-',
+                            conv["statement"][:40].lower().strip()).strip("-"))
+            draft_meta = {
+                "source": "user_prompt",
+                "observed": 1,
+                "first_seen": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "evidence": [conv.get("evidence", "")],
+                "confidence": confidence,
+                "synthesized": datetime.now(timezone.utc).isoformat(),
+                "model": model,
+            }
+            write_draft(drafts_dir, rule, draft_meta)
+            observation["drafted"] = True

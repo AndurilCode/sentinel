@@ -329,3 +329,144 @@ def test_build_synthesis_prompt():
     assert "src/billing/invoice.ts" in prompt
     assert "test-rule" in prompt
     assert "file_write|bash|mcp|any" in prompt
+
+
+from unittest.mock import patch, MagicMock
+
+
+def test_observe_pipeline_extracts_convention(tmp_path, config_dir):
+    """Full --observe pipeline with mocked Ollama calls."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Should I modify the test fixtures to match?"}
+        ]}, "timestamp": "T1"},
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+
+    extraction_response = json.dumps({
+        "conventions": [{
+            "statement": "Fix source code, don't patch tests",
+            "scope_hint": "**/*.test.*",
+            "trigger_hint": "file_write",
+            "confidence": 0.9,
+            "evidence": "no",
+        }]
+    })
+
+    synthesis_response = """id: no-test-patching
+trigger: file_write
+severity: warn
+scope:
+  - "**/*.test.*"
+prompt: |
+  Test prompt {{file_path}}
+"""
+
+    call_count = {"n": 0}
+    def mock_ollama(prompt, model, cfg, think=False):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return extraction_response
+        return synthesis_response
+
+    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                sentinel_scribe.observe(
+                    user_prompt="no",
+                    transcript_path=str(transcript),
+                    session_id="test-session",
+                    config=config,
+                    config_dir=config_dir,
+                    scribe_dir=scribe_dir,
+                    session_dir=session_dir,
+                )
+
+    obs_path = os.path.join(scribe_dir, "observations.jsonl")
+    assert os.path.exists(obs_path)
+    with open(obs_path) as f:
+        obs = json.loads(f.readline())
+    assert obs["statement"] == "Fix source code, don't patch tests"
+
+    drafts_dir = os.path.join(config_dir, "drafts")
+    draft_files = [f for f in os.listdir(drafts_dir) if f.endswith(".draft.yaml")]
+    assert len(draft_files) == 1
+
+
+def test_observe_pipeline_skips_low_confidence(tmp_path, config_dir):
+    """Should not store observation if confidence is below threshold."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    with open(transcript, "w") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "I'll add the function now"}
+        ]}, "timestamp": "T1"}) + "\n")
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+
+    extraction_response = json.dumps({
+        "conventions": [{
+            "statement": "something vague",
+            "scope_hint": "**",
+            "trigger_hint": "unknown",
+            "confidence": 0.3,
+            "evidence": "yes",
+        }]
+    })
+
+    with patch.object(sentinel_scribe, "call_ollama", return_value=extraction_response):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                sentinel_scribe.observe(
+                    user_prompt="yes",
+                    transcript_path=str(transcript),
+                    session_id="test-session",
+                    config=config,
+                    config_dir=config_dir,
+                    scribe_dir=scribe_dir,
+                    session_dir=session_dir,
+                )
+
+    obs_path = os.path.join(scribe_dir, "observations.jsonl")
+    assert not os.path.exists(obs_path)
+
+
+def test_observe_pipeline_no_convention(tmp_path, config_dir):
+    """Should do nothing when no convention is extracted."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    with open(transcript, "w") as f:
+        f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "add a login page"}, "timestamp": "T1"}) + "\n")
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+
+    with patch.object(sentinel_scribe, "call_ollama", return_value='{"conventions": []}'):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                sentinel_scribe.observe(
+                    user_prompt="add a login page",
+                    transcript_path=str(transcript),
+                    session_id="test-session",
+                    config=config,
+                    config_dir=config_dir,
+                    scribe_dir=scribe_dir,
+                    session_dir=session_dir,
+                )
+
+    obs_path = os.path.join(scribe_dir, "observations.jsonl")
+    assert not os.path.exists(obs_path)
