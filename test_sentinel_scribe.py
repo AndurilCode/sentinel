@@ -321,7 +321,8 @@ def test_build_synthesis_prompt():
     assert "Never edit billing directly" in prompt
     assert "src/billing/invoice.ts" in prompt
     assert "test-rule" in prompt
-    assert "file_write|bash|mcp|any" in prompt
+    assert "file_write" in prompt
+    assert "ACTUAL files" in prompt or "REAL paths" in prompt
 
 
 from unittest.mock import patch, MagicMock

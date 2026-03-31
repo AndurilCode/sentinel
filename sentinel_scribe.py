@@ -474,24 +474,30 @@ actions against repository-defined rules using a local LLM.
 A developer expressed this convention:
 Statement: {statement}
 Evidence: "{evidence}"
-Scope hint: {scope_hint}
 Trigger hint: {trigger_hint}
 
-Matching files in the repository:
+ACTUAL files in the repository that relate to this convention:
 {matched_files}
+
+IMPORTANT: The "scope" field MUST use glob patterns that match REAL paths from the
+file list above. Do NOT invent paths. If the files above are under "src/billing/",
+use "src/billing/**". If no files were found, use a broad pattern like "**".
 
 Existing rules for style reference:
 {sample_rules}
 
 Generate a complete rule YAML with these fields:
 - id: kebab-case identifier
-- trigger: file_write|bash|mcp|any
-- severity: block|warn (choose based on how critical the convention is)
-- scope: list of glob patterns matching the affected files/commands
-- exclude: list of glob patterns for exceptions (e.g., test files)
-- prompt: the evaluation prompt with {{{{template_vars}}}} appropriate for the trigger type (file_write uses {{{{file_path}}}}, {{{{content_snippet}}}}; bash uses {{{{command}}}}; mcp uses {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}})
+- trigger: one of file_write, bash, mcp, or any (pick the single most appropriate)
+- severity: block or warn (choose based on how critical the convention is)
+- scope: list of glob patterns derived from the ACTUAL file paths above
+- exclude: list of glob patterns for exceptions (e.g., test files). Omit if none.
+- prompt: the evaluation prompt using {{{{template_vars}}}} for the chosen trigger:
+  - file_write trigger: use {{{{file_path}}}}, {{{{content_snippet}}}}
+  - bash trigger: use {{{{command}}}}
+  - mcp trigger: use {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}}
 
-The prompt must ask a yes/no violation question and end with:
+The prompt must end with:
 Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
 
 Return ONLY valid YAML, no other text."""
@@ -510,7 +516,6 @@ def build_synthesis_prompt(observation: dict, matched_files: list[str],
     return SYNTHESIS_PROMPT.format(
         statement=observation["statement"],
         evidence=observation.get("evidence", ""),
-        scope_hint=observation.get("scope_hint", "**"),
         trigger_hint=observation.get("trigger_hint", "any"),
         matched_files=files_text,
         sample_rules=rules_text,
