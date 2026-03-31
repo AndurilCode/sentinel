@@ -325,22 +325,30 @@ def build_doc_extraction_prompt(content: str, source_type: str,
 # ── Ollama integration ──────────────────────────────────────────────
 
 def call_ollama(prompt: str, model: str, config: dict,
-                think: bool = False) -> str:
-    """Call Ollama chat endpoint. Returns response content string."""
-    payload = json.dumps({
+                think: bool = False, json_format: bool = True) -> str:
+    """Call Ollama chat endpoint. Returns response content string.
+
+    json_format=True forces JSON output (for extraction). Set to False for
+    synthesis which returns YAML.
+    """
+    system_msg = ("You are a JSON-only responder. Always respond with valid JSON, no other text."
+                  if json_format else
+                  "You are a YAML-only responder. Always respond with valid YAML, no other text.")
+    payload_dict = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are a JSON-only responder. Always respond with valid JSON, no other text."},
+            {"role": "system", "content": system_msg},
             {"role": "user", "content": prompt},
         ],
-        "format": "json",
         "stream": False,
-        "think": think,
         "options": {
-            "num_predict": 1000 if think else 150,
+            "num_predict": 1000 if not json_format else 150,
             "temperature": 0.1,
         },
-    }).encode()
+    }
+    if json_format:
+        payload_dict["format"] = "json"
+    payload = json.dumps(payload_dict).encode()
 
     url = f"{config.get('ollama_url', 'http://localhost:11434')}/api/chat"
     timeout_s = config.get("timeout_ms", 5000) / 1000
@@ -352,12 +360,49 @@ def call_ollama(prompt: str, model: str, config: dict,
     return body.get("message", {}).get("content", "")
 
 
+_VALID_TRIGGERS = {"file_write", "bash", "mcp", "unknown"}
+
+
+def _normalize_trigger_hint(hint: str) -> str:
+    """Normalize trigger_hint to a valid single trigger type.
+
+    The SLM sometimes returns pipe-separated values like 'file_write|read|modify'
+    or free-form text. Extract the first valid trigger type, default to 'unknown'.
+    """
+    if not hint:
+        return "unknown"
+    # Direct match
+    if hint in _VALID_TRIGGERS:
+        return hint
+    # Split on common separators and find first valid
+    for part in re.split(r'[|,/\s]+', hint):
+        part = part.strip().lower()
+        if part in _VALID_TRIGGERS:
+            return part
+    # Heuristic: check if hint contains a valid trigger as substring
+    for valid in ("file_write", "bash", "mcp"):
+        if valid in hint.lower():
+            return valid
+    return "unknown"
+
+
+def _normalize_conventions(conventions: list[dict]) -> list[dict]:
+    """Normalize extracted conventions — fix trigger_hint, ensure required fields."""
+    for conv in conventions:
+        conv["trigger_hint"] = _normalize_trigger_hint(conv.get("trigger_hint", "unknown"))
+        conv.setdefault("scope_hint", "**")
+        conv.setdefault("confidence", 0.0)
+        conv.setdefault("evidence", "")
+        conv.setdefault("statement", "")
+    return conventions
+
+
 def parse_extraction_response(response: str) -> list[dict]:
     """Parse the LLM extraction response. Returns list of conventions."""
     # Try direct parse
     try:
         data = json.loads(response.strip())
-        return data.get("conventions", [])
+        return _normalize_conventions(data.get("conventions", []))
     except (json.JSONDecodeError, ValueError, AttributeError):
         pass
 
@@ -366,7 +411,7 @@ def parse_extraction_response(response: str) -> list[dict]:
     cleaned = re.sub(r'\n?```\s*$', '', cleaned)
     try:
         data = json.loads(cleaned.strip())
-        return data.get("conventions", [])
+        return _normalize_conventions(data.get("conventions", []))
     except (json.JSONDecodeError, ValueError, AttributeError):
         pass
 
@@ -376,7 +421,7 @@ def parse_extraction_response(response: str) -> list[dict]:
     if start >= 0 and end > start:
         try:
             data = json.loads(response[start:end + 1])
-            return data.get("conventions", [])
+            return _normalize_conventions(data.get("conventions", []))
         except (json.JSONDecodeError, ValueError, AttributeError):
             pass
 
@@ -407,37 +452,6 @@ def load_active_rules(rules_dir: str) -> list[dict]:
             continue
     return rules
 
-
-def is_covered_by_rules(rules: list[dict], scope_hint: str, trigger_hint: str) -> bool:
-    """Check if any active rule already covers this scope+trigger."""
-    for rule in rules:
-        rt = rule.get("trigger", "any")
-        if rt != "any" and rt != trigger_hint:
-            continue
-        for pattern in rule.get("scope", ["**"]):
-            if fnmatch(scope_hint, pattern) or scope_hint == pattern:
-                return True
-    return False
-
-
-def draft_exists(drafts_dir: str, scope_hint: str, trigger_hint: str) -> bool:
-    """Check if a draft with the same scope+trigger already exists."""
-    if not os.path.isdir(drafts_dir):
-        return False
-    for entry in os.listdir(drafts_dir):
-        if not entry.endswith(".draft.yaml"):
-            continue
-        try:
-            with open(os.path.join(drafts_dir, entry)) as f:
-                draft = yaml.safe_load(f) or {}
-            if draft.get("trigger") != trigger_hint:
-                continue
-            for pattern in draft.get("scope", []):
-                if fnmatch(scope_hint, pattern) or scope_hint == pattern:
-                    return True
-        except Exception:
-            continue
-    return False
 
 
 def write_draft(drafts_dir: str, rule: dict, draft_meta: dict) -> str:
@@ -520,16 +534,44 @@ def parse_synthesis_response(response: str) -> Optional[dict]:
 # ── Observe pipeline ────────────────────────────────────────────────
 
 def _glob_repo_files(scope_hint: str, project_root: str) -> list[str]:
-    """Find files matching scope_hint in the repo."""
+    """Find files matching scope_hint in the repo.
+
+    Handles both proper globs ('src/billing/**') and free-text hints
+    ('billing module') by falling back to keyword-based directory search.
+    """
     matched = []
     pattern = scope_hint
-    if not pattern.endswith("*"):
-        pattern = pattern.rstrip("/") + "/**"
+
+    # If it looks like a glob pattern already, use it directly
+    if "*" in pattern or "/" in pattern or "." in pattern:
+        if not pattern.endswith("*"):
+            pattern = pattern.rstrip("/") + "/**"
+        for root, dirs, files in os.walk(project_root):
+            dirs[:] = [d for d in dirs if not d.startswith(".")
+                       and d not in ("node_modules", "venv", ".venv", "__pycache__")]
+            for fname in files:
+                rel = os.path.relpath(os.path.join(root, fname), project_root)
+                if fnmatch(rel, pattern):
+                    matched.append(rel)
+                if len(matched) >= 20:
+                    return matched
+        if matched:
+            return matched
+
+    # Fallback: extract keywords from free-text hint and search for
+    # directories/files containing those keywords
+    keywords = [w.lower() for w in re.split(r'[\s_/\\-]+', scope_hint)
+                if len(w) > 2 and w.lower() not in ("the", "and", "for", "all", "any", "module", "folder", "file", "code")]
+    if not keywords:
+        return []
+
     for root, dirs, files in os.walk(project_root):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "venv", ".venv", "__pycache__")]
+        dirs[:] = [d for d in dirs if not d.startswith(".")
+                   and d not in ("node_modules", "venv", ".venv", "__pycache__")]
         for fname in files:
             rel = os.path.relpath(os.path.join(root, fname), project_root)
-            if fnmatch(rel, pattern):
+            rel_lower = rel.lower()
+            if any(kw in rel_lower for kw in keywords):
                 matched.append(rel)
             if len(matched) >= 20:
                 return matched
@@ -613,22 +655,20 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
         rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
         drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
 
-        active_rules = load_active_rules(rules_dir)
-        if is_covered_by_rules(active_rules, scope_hint, trigger_hint):
-            continue
-        if is_dismissed(scribe_dir, scope_hint, trigger_hint):
-            continue
-        if draft_exists(drafts_dir, scope_hint, trigger_hint):
-            continue
+        # No deterministic pre-synthesis checks on scope_hint — the hint is
+        # LLM-generated free text (possibly in any language) and cannot be
+        # reliably matched against active rule globs or dismissed entries.
+        # The human reviews drafts via /sentinel-drafts.
 
         project_root = os.path.dirname(os.path.dirname(config_dir))
         matched_files = _glob_repo_files(scope_hint, project_root)
+        active_rules = load_active_rules(rules_dir)
         sample_rules = active_rules[:3]
 
         fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
         try:
             synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
-            synth_response = call_ollama(synth_prompt, model, config, think=True)
+            synth_response = call_ollama(synth_prompt, model, config, json_format=False)
         except Exception:
             continue
         finally:
@@ -825,21 +865,14 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                 rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
                 drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
 
-                active_rules = load_active_rules(rules_dir)
-                if is_covered_by_rules(active_rules, scope_hint, trigger_hint):
-                    continue
-                if is_dismissed(scribe_dir, scope_hint, trigger_hint):
-                    continue
-                if draft_exists(drafts_dir, scope_hint, trigger_hint):
-                    continue
-
                 matched_files = _glob_repo_files(scope_hint, project_root)
+                active_rules = load_active_rules(rules_dir)
                 sample_rules = active_rules[:3]
 
                 fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
                 try:
                     synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
-                    synth_response = call_ollama(synth_prompt, model, config, think=True)
+                    synth_response = call_ollama(synth_prompt, model, config, json_format=False)
                 except Exception:
                     continue
                 finally:

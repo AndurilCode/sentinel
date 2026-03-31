@@ -246,38 +246,31 @@ def test_parse_extraction_response_with_stray_text():
     assert len(result) == 1
 
 
-def test_is_covered_by_active_rule(config_dir):
-    """Should detect when an active rule already covers the scope+trigger."""
+def test_normalize_trigger_hint_pipe_separated():
+    """Should extract first valid trigger from pipe-separated values."""
     import sentinel_scribe
-    rule_path = os.path.join(config_dir, "rules", "billing-guard.yaml")
-    with open(rule_path, "w") as f:
-        yaml.dump({
-            "id": "billing-guard",
-            "trigger": "file_write",
-            "scope": ["src/billing/**"],
-            "prompt": "test prompt",
-        }, f)
-    rules = sentinel_scribe.load_active_rules(os.path.join(config_dir, "rules"))
-    assert sentinel_scribe.is_covered_by_rules(rules, "src/billing/**", "file_write") is True
-    assert sentinel_scribe.is_covered_by_rules(rules, "src/api/**", "file_write") is False
-    assert sentinel_scribe.is_covered_by_rules(rules, "src/billing/**", "bash") is False
+    assert sentinel_scribe._normalize_trigger_hint("file_write|read|modify") == "file_write"
+    assert sentinel_scribe._normalize_trigger_hint("bash|mcp|unknown") == "bash"
+    assert sentinel_scribe._normalize_trigger_hint("read|modify") == "unknown"
+    assert sentinel_scribe._normalize_trigger_hint("mcp") == "mcp"
+    assert sentinel_scribe._normalize_trigger_hint("") == "unknown"
+    assert sentinel_scribe._normalize_trigger_hint("file_write") == "file_write"
 
 
-def test_draft_already_exists(config_dir):
-    """Should detect when a draft with same scope+trigger already exists."""
+def test_parse_extraction_normalizes_trigger():
+    """parse_extraction_response should normalize trigger_hint values."""
     import sentinel_scribe
-    drafts_dir = os.path.join(config_dir, "drafts")
-    draft_path = os.path.join(drafts_dir, "billing-protection.draft.yaml")
-    with open(draft_path, "w") as f:
-        yaml.dump({
-            "id": "billing-protection",
-            "trigger": "file_write",
-            "scope": ["src/billing/**"],
-            "prompt": "test",
-            "_draft": {"source": "user_prompt", "synthesized": "2026-03-31T10:00:00Z"},
-        }, f)
-    assert sentinel_scribe.draft_exists(drafts_dir, "src/billing/**", "file_write") is True
-    assert sentinel_scribe.draft_exists(drafts_dir, "src/api/**", "file_write") is False
+    response = json.dumps({"conventions": [{
+        "statement": "test",
+        "scope_hint": "src/billing",
+        "trigger_hint": "file_write|read|modify",
+        "confidence": 0.9,
+        "evidence": "test",
+    }]})
+    result = sentinel_scribe.parse_extraction_response(response)
+    assert len(result) == 1
+    assert result[0]["trigger_hint"] == "file_write"
+
 
 
 def test_write_draft_yaml(config_dir):
@@ -372,7 +365,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, think=False):
+    def mock_ollama(prompt, model, cfg, think=False, json_format=True):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
@@ -516,7 +509,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, think=False):
+    def mock_ollama(prompt, model, cfg, think=False, json_format=True):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
@@ -580,7 +573,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, think=False):
+    def mock_ollama(prompt, model, cfg, think=False, json_format=True):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
