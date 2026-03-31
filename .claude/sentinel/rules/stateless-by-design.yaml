@@ -1,0 +1,13 @@
+id: stateless-by-design
+trigger: file_write
+severity: info
+scope:
+  - "sentinel.py"
+  - "sentinel_context.py"
+prompt: |
+  DESIGN DECISION: Sentinel evaluations are stateless — each invocation
+  is independent with no cross-invocation memory. Do not add session
+  tracking, action history, or state that persists between hook calls
+  in sentinel.py. The only exception is sentinel_context.py which
+  maintains a rolling summary specifically for info post rules.
+  FILE: {{file_path}}

@@ -1,0 +1,14 @@
+id: deny-reason-guidance
+trigger: file_write
+severity: info
+scope:
+  - ".claude/sentinel/rules/**"
+  - "examples/**"
+prompt: |
+  CONVENTION: Write deny/warn reasons as INSTRUCTIONS, not just
+  descriptions. The agent reads the reason and uses it to fix the
+  problem. Bad: "Contains hardcoded credentials." Good: "Lines 12, 47
+  contain API keys — replace with environment variable references."
+  Also: block-severity rules doing semantic analysis should specify
+  model: "gemma3:12b" for better accuracy.
+  FILE: {{file_path}}

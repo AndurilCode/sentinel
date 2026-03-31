@@ -1,0 +1,26 @@
+id: no-stderr-to-agent
+trigger: file_write
+severity: info
+post: true
+scope:
+  - "sentinel.py"
+  - "sentinel_context.py"
+exclude:
+  - "test_*"
+prompt: |
+  DOMAIN KNOWLEDGE: Sentinel must never bloat the agent with errors.
+  - All diagnostic output goes to the JSONL log via _log() or _debug()
+  - sys.stderr.write() is only for rule validation warnings at load time
+  - If Ollama is down, timeout, or returns garbage → log it, skip silently
+  - Every code path that skips evaluation must write level: "skipped" to log
+  - The agent should only see: permissionDecision JSON or additionalContext
+
+  SESSION CONTEXT:
+  {{session_context}}
+
+  FILE: {{file_path}}
+  RESULT: {{tool_output}}
+
+  If error handling or output paths were changed, check for silent errors
+  or agent-visible noise.
+  Respond with JSON: {"context": "your message (max 80 words)"}

@@ -1,0 +1,26 @@
+id: path-resolution-convention
+trigger: file_write
+severity: info
+post: true
+scope:
+  - "sentinel.py"
+  - "sentinel_context.py"
+  - "skills/sentinel-stats/*"
+prompt: |
+  DOMAIN KNOWLEDGE: Path resolution conventions in Sentinel:
+  - Relative log_file paths resolve from REPO ROOT (cwd), not config dir
+  - Session state lives at <project_root>/.sentinel/sessions/<id>/
+  - Dedup cache lives at <config_dir>/dedup/<id>/
+  - _find_config_dir() checks SENTINEL_CONFIG_DIR env first, then walks up
+  - _session_dir() derives project root from config dir location
+  PAST BUG: stats script doubled the path when resolving relative to config
+  dir instead of repo root.
+
+  SESSION CONTEXT:
+  {{session_context}}
+
+  FILE: {{file_path}}
+  RESULT: {{tool_output}}
+
+  If path resolution logic was changed, check for consistency across scripts.
+  Respond with JSON: {"context": "your message (max 80 words)"}

@@ -1,0 +1,37 @@
+id: version-bump-reminder
+trigger: file_write
+severity: info
+post: true
+scope:
+  - "sentinel.py"
+  - "sentinel_context.py"
+  - "sentinel_lock.py"
+  - "hooks/hooks.json"
+  - "skills/**"
+exclude:
+  - "test_*"
+  - "docs/**"
+  - "examples/**"
+prompt: |
+  DOMAIN KNOWLEDGE: Sentinel is distributed as a Claude Code plugin.
+  Version must be bumped in BOTH files when releasing meaningful changes:
+  - .claude-plugin/plugin.json ("version" field)
+  - .claude-plugin/marketplace.json ("version" field inside plugins[0])
+  Both versions must always match. Use semver:
+  - PATCH (x.y.Z): bug fixes, doc-only changes
+  - MINOR (x.Y.0): new features, new config keys, new rule fields
+  - MAJOR (X.0.0): breaking changes to rule format or hook contract
+
+  PAST PATTERN: Features were merged without bumping the version,
+  causing users to have stale plugin installs with no way to know
+  they're outdated.
+
+  SESSION CONTEXT:
+  {{session_context}}
+
+  FILE: {{file_path}}
+  RESULT: {{tool_output}}
+
+  If this looks like a releasable change (new feature, bug fix, or
+  schema change), remind to bump the version in both plugin files.
+  Respond with JSON: {"context": "your message (max 80 words)"}

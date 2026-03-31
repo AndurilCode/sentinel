@@ -8,3 +8,5 @@ build/
 *.egg
 .venv/
 venv/
+.sentinel/
+.claude/sentinel/dedup/

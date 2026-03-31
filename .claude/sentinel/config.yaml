@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────
+# Sentinel — configuration
+# ─────────────────────────────────────────────────────────────
+
+# Ollama model for rule evaluation.
+# Small models work because each rule is evaluated independently
+# as a binary classification task with constrained JSON output.
+#
+# Recommended (by hardware):
+#   8 GB RAM   → gemma3:4b        (default, ~3 GB at Q4)
+#   16 GB RAM  → gemma3:12b       (best accuracy for block rules)
+#
+# Any Ollama-compatible model works. Per-rule overrides via `model:` in rule files.
+model: "gemma3:4b"
+
+# Ollama endpoint
+ollama_url: "http://localhost:11434"
+
+# Per-rule evaluation timeout (ms). Rules that exceed this are skipped.
+timeout_ms: 5000
+
+# Minimum confidence to treat an LLM evaluation as a real violation.
+# Below this threshold the violation is discarded (avoids false positives).
+# Range: 0.0–1.0. Start conservative (0.7), tune down as you gain data.
+confidence_threshold: 0.7
+
+# Maximum concurrent Ollama calls.
+# Each rule is one lightweight call (~100-150 output tokens).
+# Set to match your available inference bandwidth.
+max_parallel: 4
+
+# Actual concurrent Ollama HTTP calls (GPU-bound).
+# Separate from max_parallel which controls thread pool size.
+ollama_concurrency: 3
+
+# Use thinking mode (slower, more accurate) or disable (fast gate).
+# For hook evaluation, disabling thinking is almost always sufficient.
+think: false
+
+# Behavior when Ollama is unreachable or returns an error.
+#   true  → skip the rule, allow the action (fail open)
+#   false → block the action (fail closed, strict mode)
+fail_open: true
+
+# Truncation limit for file content included in prompts.
+# Keeps token usage predictable. Rule prompts should rarely need
+# more than a snippet — the evaluation is about the action, not the code.
+content_max_chars: 800
+
+# JSONL log file for evaluation telemetry.
+# Each evaluation writes one line: rule_id, trigger, violation, confidence,
+# elapsed_ms, model. Feed into Vigil or any observability pipeline.
+# Set to null to disable logging.
+log_file: ".claude/sentinel/sentinel.log"
+
+# Rules directory (relative to this config's directory or absolute).
+rules_dir: "rules"
+
+# Session context accumulator for info severity rules.
+# Maintains a rolling summary of the agent's session by reading
+# the transcript. Used by PostToolUse info rules with post: true.
+context:
+  enabled: true
+  model: "gemma3:4b"
+  min_events: 3
+  lock_timeout_s: 30
+  summary_max_words: 150

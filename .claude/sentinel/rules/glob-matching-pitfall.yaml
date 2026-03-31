@@ -1,0 +1,13 @@
+id: glob-matching-pitfall
+trigger: file_write
+severity: info
+scope:
+  - "sentinel.py"
+prompt: |
+  PAST BUG: Python's fnmatch does NOT support ** as recursive glob.
+  Patterns like **/internal/schema.sql silently fail. Sentinel uses
+  _glob_match() which strips leading **/ and retries. Also, hook
+  events contain absolute paths — _relativize() must strip cwd before
+  matching against rule scope patterns. Both functions are critical
+  and must not be simplified or replaced with raw fnmatch.
+  FILE: {{file_path}}

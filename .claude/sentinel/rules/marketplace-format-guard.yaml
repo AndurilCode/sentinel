@@ -1,0 +1,13 @@
+id: marketplace-format-guard
+trigger: file_write
+severity: info
+scope:
+  - ".claude-plugin/marketplace.json"
+prompt: |
+  PAST BUG (took 3 attempts to fix): The "source" field in
+  marketplace.json MUST be a string path like "./" — NOT an object
+  like {"type": "local", "path": "./"}. The object format causes
+  "Invalid schema: plugins.0.source: Invalid input" on install.
+  Also: do NOT add a "hooks" field to plugin.json — hooks/hooks.json
+  is auto-discovered by Claude Code.
+  FILE: {{file_path}}

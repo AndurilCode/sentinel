@@ -1,0 +1,35 @@
+id: skill-schema-drift
+trigger: file_write
+severity: info
+post: true
+scope:
+  - "sentinel.py"
+  - "sentinel_context.py"
+  - "sentinel_lock.py"
+  - "docs/reference.md"
+exclude:
+  - "test_*"
+prompt: |
+  DOMAIN KNOWLEDGE: Skills must stay in sync with the actual code schemas.
+  When rule format, config keys, template variables, or severity values
+  change in sentinel.py, these skill files must be updated to match:
+  - skills/sentinel-rule/SKILL.md — rule format reference, severity values,
+    template variables, "What makes a good rule" section, guided process
+  - skills/sentinel-config/SKILL.md — config reference table, all keys/defaults
+  - skills/sentinel-init/SKILL.md — config.yaml scaffold (Step 6), hook
+    registration docs (Step 8), smoke test command (Step 9)
+  - docs/reference.md — configuration reference, rule format, template vars
+
+  PAST PATTERN: Config keys were added to DEFAULTS but not to skill docs.
+  New template variables were added but not documented in sentinel-rule skill.
+  New severity values were added but the skill still offered only block/warn.
+
+  SESSION CONTEXT:
+  {{session_context}}
+
+  FILE: {{file_path}}
+  RESULT: {{tool_output}}
+
+  If rule format, config keys, template vars, or severities changed,
+  list which skill files need updating.
+  Respond with JSON: {"context": "your message (max 80 words)"}

@@ -1,0 +1,22 @@
+id: hook-registration-guard
+trigger: file_write
+severity: warn
+scope:
+  - "hooks/hooks.json"
+  - "hooks/copilot-hooks.json"
+prompt: |
+  A coding agent is modifying a Sentinel hook registration file:
+  FILE: {{file_path}}
+  ACTION: {{action_summary}}
+
+  CONTENT PREVIEW:
+  {{content_snippet}}
+
+  RULE: Hook registration files control how Sentinel integrates with
+  coding agents. Changes must preserve the existing hook structure
+  (PreToolUse, PostToolUse, Stop) and use valid JSON with correct
+  command paths. Removing hooks or changing command paths could
+  silently disable Sentinel.
+
+  Does this change risk breaking the hook registration?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}

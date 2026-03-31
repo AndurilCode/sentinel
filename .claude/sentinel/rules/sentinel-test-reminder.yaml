@@ -1,0 +1,28 @@
+id: sentinel-test-reminder
+trigger: file_write
+severity: info
+post: true
+scope:
+  - "sentinel.py"
+  - "sentinel_context.py"
+  - "sentinel_lock.py"
+exclude:
+  - "test_*"
+prompt: |
+  DOMAIN KNOWLEDGE: This is the Sentinel plugin codebase.
+  - test_sentinel.py covers sentinel.py (unit + integration)
+  - test_sentinel_lock.py covers sentinel_lock.py
+  - test_sentinel_context.py covers sentinel_context.py
+  - test_integration_info.py covers end-to-end info severity
+  - All tests must pass without a running Ollama instance
+  - Run: python3 -m pytest test_sentinel.py test_sentinel_lock.py test_sentinel_context.py test_integration_info.py
+
+  SESSION CONTEXT:
+  {{session_context}}
+
+  The agent just modified a core Sentinel file:
+  FILE: {{file_path}}
+  RESULT: {{tool_output}}
+
+  Based on what was changed, remind which test file(s) should be run.
+  Respond with JSON: {"context": "your message (max 80 words)"}
