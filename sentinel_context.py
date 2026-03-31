@@ -163,7 +163,10 @@ def call_ollama(prompt: str, model: str, config: dict) -> str:
     """Call Ollama chat endpoint."""
     payload = json.dumps({
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [
+            {"role": "system", "content": "You are a JSON-only responder. Always respond with valid JSON, no other text."},
+            {"role": "user", "content": prompt},
+        ],
         "stream": False,
         "options": {"temperature": 0.1, "num_predict": 300},
     }).encode()
