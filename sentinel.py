@@ -671,6 +671,46 @@ def format_decision_info(context: str, agent_format: str) -> str:
     })
 
 
+# ── Session helpers ─────────────────────────────────────────────────
+
+def _sanitize_session_id(session_id: str) -> str:
+    """Strip path separators and restrict to safe characters."""
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', session_id)
+
+
+def _project_root() -> str:
+    """Find project root by walking up to find .claude/ directory."""
+    cwd = os.getcwd()
+    while True:
+        if os.path.isdir(os.path.join(cwd, ".claude")):
+            return cwd
+        parent = os.path.dirname(cwd)
+        if parent == cwd:
+            return os.getcwd()
+        cwd = parent
+
+
+def _session_dir(session_id: str, config: dict) -> str:
+    safe_id = _sanitize_session_id(session_id)
+    return os.path.join(_project_root(), ".sentinel", "sessions", safe_id)
+
+
+def _session_lock_path(session_id: str, config: dict) -> str:
+    d = _session_dir(session_id, config)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "ollama.lock")
+
+
+def _read_session_context(session_id: str, config: dict) -> Optional[dict]:
+    """Read the accumulator's latest summary.json. Returns None if not available."""
+    summary_path = os.path.join(_session_dir(session_id, config), "summary.json")
+    try:
+        with open(summary_path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def _ollama_reachable(config: dict) -> bool:
@@ -705,22 +745,38 @@ def _find_config_dir() -> Optional[str]:
     return None
 
 
-def main():
-    config_dir = _find_config_dir()
-    if not config_dir:
-        sys.exit(0)  # no sentinel config found, pass through
+def evaluate_info_rule(rule: dict, event: dict, config: dict,
+                       session_id: str) -> Optional[str]:
+    """Call Ollama for info synthesis. Returns context string or None."""
+    from sentinel_lock import acquire_lock, release_lock, LockPriority
 
-    config = load_config(config_dir)
-    rules  = load_rules(config["rules_dir"])
-    if not rules:
-        sys.exit(0)
+    prompt = render_prompt(rule, event, config)
+    model = rule.get("model", config.get("context", {}).get("model", config["model"]))
+    lock_path = _session_lock_path(session_id, config)
+    t0 = time.monotonic()
 
-    # Read hook event (before pre-flight so we know the agent format)
+    fd = acquire_lock(lock_path, LockPriority.P1_SYNTHESIZER, timeout_s=5)
     try:
-        raw_data = json.loads(sys.stdin.read())
+        content = _call_ollama(prompt, model, config)
     except Exception:
-        sys.exit(0)  # unparseable → fail open
+        return None
+    finally:
+        release_lock(fd)
 
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    _log(config, rule, event, violation=False, confidence=0.0,
+         reason="info", elapsed_ms=elapsed_ms, level="info")
+
+    try:
+        parsed = json.loads(re.sub(r'^```(?:json)?\s*\n?', '',
+                           re.sub(r'\n?```\s*$', '', content.strip())))
+        return parsed.get("context", content)
+    except (json.JSONDecodeError, AttributeError):
+        return content.strip()
+
+
+def main_pre(raw_data: dict, rules: list, config: dict):
+    """PreToolUse mode: evaluate block/warn rules and static info rules."""
     event_data, agent_format = normalize_input(raw_data)
 
     event = parse_event(event_data, config)
@@ -785,6 +841,71 @@ def main():
     if info_contexts:
         print(format_decision_info("\n\n".join(info_contexts), agent_format))
     sys.exit(0)
+
+
+def main_post(raw_data: dict, rules: list, config: dict):
+    """PostToolUse mode: evaluate info post rules with synthesizer."""
+    event_data, agent_format = normalize_input(raw_data)
+    session_id = raw_data.get("session_id", "unknown")
+
+    event = parse_event(event_data, config)
+    matching = [r for r in rules
+                if rule_matches(r, event)
+                and r.get("severity") == "info"
+                and r.get("post")]
+    if not matching:
+        sys.exit(0)
+
+    if not _ollama_reachable(config):
+        sys.exit(0)  # info is advisory, always fail open
+
+    session_context = _read_session_context(session_id, config)
+
+    event["template_vars"]["tool_output"] = json.dumps(
+        raw_data.get("tool_response", {}))[:800]
+    event["template_vars"]["session_context"] = json.dumps(
+        session_context) if session_context else "{}"
+
+    contexts = []
+    for r in matching:
+        result = evaluate_info_rule(r, event, config, session_id)
+        if result:
+            contexts.append(result)
+
+    if not contexts:
+        sys.exit(0)
+
+    combined = "\n".join(contexts)
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": combined,
+        }
+    }))
+    sys.exit(0)
+
+
+def main():
+    post_mode = "--post" in sys.argv
+
+    config_dir = _find_config_dir()
+    if not config_dir:
+        sys.exit(0)
+
+    config = load_config(config_dir)
+    rules = load_rules(config["rules_dir"])
+    if not rules:
+        sys.exit(0)
+
+    try:
+        raw_data = json.loads(sys.stdin.read())
+    except Exception:
+        sys.exit(0)
+
+    if post_mode:
+        main_post(raw_data, rules, config)
+    else:
+        main_pre(raw_data, rules, config)
 
 
 if __name__ == "__main__":

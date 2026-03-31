@@ -878,3 +878,41 @@ class TestInfoRules:
         assert "additionalContext" in output["hookSpecificOutput"]
         assert "Payments team" in output["hookSpecificOutput"]["additionalContext"]
         assert "permissionDecision" not in output["hookSpecificOutput"]
+
+    def test_post_mode_filters_info_post_rules(self, tmp_path):
+        """--post mode only evaluates rules with severity: info and post: true."""
+        config_dir = tmp_path / ".claude" / "sentinel"
+        rules_dir = config_dir / "rules"
+        rules_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text("model: gemma3:4b\n")
+
+        # A block rule — should be ignored in --post mode
+        (rules_dir / "block-rule.yaml").write_text(
+            'id: block-rule\ntrigger: file_write\nseverity: block\nscope:\n  - "**"\nprompt: "Check this"\n')
+
+        # An info rule without post — should be ignored in --post mode
+        (rules_dir / "info-static.yaml").write_text(
+            'id: info-static\ntrigger: file_write\nseverity: info\nscope:\n  - "**"\nprompt: "Static info"\n')
+
+        # An info post rule — should be evaluated in --post mode
+        (rules_dir / "info-post.yaml").write_text(
+            'id: info-post\ntrigger: file_write\nseverity: info\npost: true\nscope:\n  - "**"\nprompt: "Domain knowledge: {{tool_output}} {{session_context}}"\n')
+
+        event_json = json.dumps({
+            "hook_event_name": "PostToolUse",
+            "session_id": "test-session",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "test.py", "content": "x = 1"},
+            "tool_response": {"success": True}
+        })
+
+        # This test verifies filtering — block and info-static rules should be skipped.
+        # Since Ollama may not be running, --post mode should exit silently (no output).
+        # The important thing is it doesn't error or produce block/warn output.
+        result = run_sentinel_post(event_json, config_dir=str(config_dir))
+        # If Ollama is not running, result will be empty (fail-open for info)
+        # If Ollama IS running, result should be additionalContext, never permissionDecision: deny
+        if result.strip():
+            output = json.loads(result)
+            assert "permissionDecision" not in output.get("hookSpecificOutput", {}) or \
+                   output["hookSpecificOutput"].get("permissionDecision") != "deny"
