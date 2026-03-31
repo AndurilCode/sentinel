@@ -185,3 +185,62 @@ def test_build_context_window_skips_meta_tools(tmp_path):
     window = sentinel_scribe.build_context_window(str(transcript), max_events=5)
     assert len(window) == 1
     assert "Write" in window[0] or "app.py" in window[0]
+
+
+def test_build_human_prompt_with_context():
+    import sentinel_scribe
+    window_lines = [
+        "[assistant] Tests are failing. Should I modify the test fixtures?",
+        "[human] no",
+    ]
+    prompt = sentinel_scribe.build_human_extraction_prompt(window_lines, guidance=None)
+    assert "Conversation context:" in prompt
+    assert "test fixtures" in prompt
+    assert "[human] no" in prompt
+    assert "PRIORITY GUIDANCE" not in prompt
+
+
+def test_build_human_prompt_with_guidance():
+    import sentinel_scribe
+    window_lines = ["[human] don't touch billing"]
+    prompt = sentinel_scribe.build_human_extraction_prompt(
+        window_lines, guidance="Focus on security and billing boundaries"
+    )
+    assert "PRIORITY GUIDANCE" in prompt
+    assert "security and billing" in prompt
+
+
+def test_build_doc_prompt():
+    import sentinel_scribe
+    prompt = sentinel_scribe.build_doc_extraction_prompt(
+        content="Never commit .env files", source_type="CLAUDE.md", guidance=None
+    )
+    assert "Source type: CLAUDE.md" in prompt
+    assert "Never commit .env" in prompt
+
+
+def test_parse_extraction_response_valid():
+    import sentinel_scribe
+    response = '{"conventions": [{"statement": "No billing edits", "scope_hint": "src/billing", "trigger_hint": "file_write", "confidence": 0.9, "evidence": "don\'t touch billing"}]}'
+    result = sentinel_scribe.parse_extraction_response(response)
+    assert len(result) == 1
+    assert result[0]["statement"] == "No billing edits"
+
+
+def test_parse_extraction_response_empty():
+    import sentinel_scribe
+    result = sentinel_scribe.parse_extraction_response('{"conventions": []}')
+    assert result == []
+
+
+def test_parse_extraction_response_malformed():
+    import sentinel_scribe
+    result = sentinel_scribe.parse_extraction_response("not json at all")
+    assert result == []
+
+
+def test_parse_extraction_response_with_stray_text():
+    import sentinel_scribe
+    response = 'Here is my analysis:\n{"conventions": [{"statement": "test", "scope_hint": "src/", "trigger_hint": "bash", "confidence": 0.8, "evidence": "evidence"}]}\nDone.'
+    result = sentinel_scribe.parse_extraction_response(response)
+    assert len(result) == 1
