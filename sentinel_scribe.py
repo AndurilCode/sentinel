@@ -381,3 +381,137 @@ def parse_extraction_response(response: str) -> list[dict]:
             pass
 
     return []
+
+
+# ── Active rule and draft checks ────────────────────────────────────
+
+def load_active_rules(rules_dir: str) -> list[dict]:
+    """Load active rules from rules directory."""
+    rules = []
+    if not os.path.isdir(rules_dir):
+        return rules
+    for entry in os.listdir(rules_dir):
+        if not entry.endswith((".yaml", ".yml", ".json")):
+            continue
+        try:
+            with open(os.path.join(rules_dir, entry)) as f:
+                if entry.endswith((".yaml", ".yml")):
+                    rule = yaml.safe_load(f) or {}
+                else:
+                    rule = json.load(f)
+            rule.setdefault("id", Path(entry).stem)
+            rule.setdefault("trigger", "any")
+            rule.setdefault("scope", ["**"])
+            rules.append(rule)
+        except Exception:
+            continue
+    return rules
+
+
+def is_covered_by_rules(rules: list[dict], scope_hint: str, trigger_hint: str) -> bool:
+    """Check if any active rule already covers this scope+trigger."""
+    for rule in rules:
+        rt = rule.get("trigger", "any")
+        if rt != "any" and rt != trigger_hint:
+            continue
+        for pattern in rule.get("scope", ["**"]):
+            if fnmatch(scope_hint, pattern) or scope_hint == pattern:
+                return True
+    return False
+
+
+def draft_exists(drafts_dir: str, scope_hint: str, trigger_hint: str) -> bool:
+    """Check if a draft with the same scope+trigger already exists."""
+    if not os.path.isdir(drafts_dir):
+        return False
+    for entry in os.listdir(drafts_dir):
+        if not entry.endswith(".draft.yaml"):
+            continue
+        try:
+            with open(os.path.join(drafts_dir, entry)) as f:
+                draft = yaml.safe_load(f) or {}
+            if draft.get("trigger") != trigger_hint:
+                continue
+            for pattern in draft.get("scope", []):
+                if fnmatch(scope_hint, pattern) or scope_hint == pattern:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def write_draft(drafts_dir: str, rule: dict, draft_meta: dict) -> str:
+    """Write a draft rule YAML file. Returns the file path."""
+    os.makedirs(drafts_dir, exist_ok=True)
+    rule_id = rule.get("id", "unnamed-rule")
+    path = os.path.join(drafts_dir, f"{rule_id}.draft.yaml")
+    output = dict(rule)
+    output["_draft"] = draft_meta
+    with open(path, "w") as f:
+        yaml.dump(output, f, default_flow_style=False, sort_keys=False)
+    return path
+
+
+# ── Synthesis ───────────────────────────────────────────────────────
+
+SYNTHESIS_PROMPT = """You are generating a Sentinel rule YAML file. Sentinel evaluates coding agent
+actions against repository-defined rules using a local LLM.
+
+A developer expressed this convention:
+Statement: {statement}
+Evidence: "{evidence}"
+Scope hint: {scope_hint}
+Trigger hint: {trigger_hint}
+
+Matching files in the repository:
+{matched_files}
+
+Existing rules for style reference:
+{sample_rules}
+
+Generate a complete rule YAML with these fields:
+- id: kebab-case identifier
+- trigger: file_write|bash|mcp|any
+- severity: block|warn (choose based on how critical the convention is)
+- scope: list of glob patterns matching the affected files/commands
+- exclude: list of glob patterns for exceptions (e.g., test files)
+- prompt: the evaluation prompt with {{{{template_vars}}}} appropriate for the trigger type (file_write uses {{{{file_path}}}}, {{{{content_snippet}}}}; bash uses {{{{command}}}}; mcp uses {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}})
+
+The prompt must ask a yes/no violation question and end with:
+Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+
+Return ONLY valid YAML, no other text."""
+
+
+def build_synthesis_prompt(observation: dict, matched_files: list[str],
+                            sample_rules: list[dict]) -> str:
+    """Build the synthesis prompt with all context."""
+    files_text = "\n".join(f"  - {f}" for f in matched_files[:20]) if matched_files else "  (no matching files found)"
+    rules_text = ""
+    for r in sample_rules[:3]:
+        rules_text += f"\n---\n{yaml.dump(r, default_flow_style=False)}"
+    if not rules_text:
+        rules_text = "\n  (no existing rules)"
+
+    return SYNTHESIS_PROMPT.format(
+        statement=observation["statement"],
+        evidence=observation.get("evidence", ""),
+        scope_hint=observation.get("scope_hint", "**"),
+        trigger_hint=observation.get("trigger_hint", "any"),
+        matched_files=files_text,
+        sample_rules=rules_text,
+    )
+
+
+def parse_synthesis_response(response: str) -> Optional[dict]:
+    """Parse YAML rule from synthesis LLM response."""
+    # Strip markdown fences
+    cleaned = re.sub(r'^```(?:yaml)?\s*\n?', '', response.strip())
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+    try:
+        rule = yaml.safe_load(cleaned)
+        if isinstance(rule, dict) and "prompt" in rule:
+            return rule
+    except yaml.YAMLError:
+        pass
+    return None

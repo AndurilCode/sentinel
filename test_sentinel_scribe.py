@@ -244,3 +244,88 @@ def test_parse_extraction_response_with_stray_text():
     response = 'Here is my analysis:\n{"conventions": [{"statement": "test", "scope_hint": "src/", "trigger_hint": "bash", "confidence": 0.8, "evidence": "evidence"}]}\nDone.'
     result = sentinel_scribe.parse_extraction_response(response)
     assert len(result) == 1
+
+
+def test_is_covered_by_active_rule(config_dir):
+    """Should detect when an active rule already covers the scope+trigger."""
+    import sentinel_scribe
+    rule_path = os.path.join(config_dir, "rules", "billing-guard.yaml")
+    with open(rule_path, "w") as f:
+        yaml.dump({
+            "id": "billing-guard",
+            "trigger": "file_write",
+            "scope": ["src/billing/**"],
+            "prompt": "test prompt",
+        }, f)
+    rules = sentinel_scribe.load_active_rules(os.path.join(config_dir, "rules"))
+    assert sentinel_scribe.is_covered_by_rules(rules, "src/billing/**", "file_write") is True
+    assert sentinel_scribe.is_covered_by_rules(rules, "src/api/**", "file_write") is False
+    assert sentinel_scribe.is_covered_by_rules(rules, "src/billing/**", "bash") is False
+
+
+def test_draft_already_exists(config_dir):
+    """Should detect when a draft with same scope+trigger already exists."""
+    import sentinel_scribe
+    drafts_dir = os.path.join(config_dir, "drafts")
+    draft_path = os.path.join(drafts_dir, "billing-protection.draft.yaml")
+    with open(draft_path, "w") as f:
+        yaml.dump({
+            "id": "billing-protection",
+            "trigger": "file_write",
+            "scope": ["src/billing/**"],
+            "prompt": "test",
+            "_draft": {"source": "user_prompt", "synthesized": "2026-03-31T10:00:00Z"},
+        }, f)
+    assert sentinel_scribe.draft_exists(drafts_dir, "src/billing/**", "file_write") is True
+    assert sentinel_scribe.draft_exists(drafts_dir, "src/api/**", "file_write") is False
+
+
+def test_write_draft_yaml(config_dir):
+    """Should write a valid draft YAML with _draft metadata."""
+    import sentinel_scribe
+    drafts_dir = os.path.join(config_dir, "drafts")
+    draft = {
+        "id": "no-billing-edits",
+        "trigger": "file_write",
+        "severity": "block",
+        "scope": ["src/billing/**"],
+        "exclude": ["**/*.test.ts"],
+        "prompt": "Test prompt {{file_path}}",
+    }
+    draft_meta = {
+        "source": "user_prompt",
+        "observed": 1,
+        "first_seen": "2026-03-31",
+        "evidence": ["don't touch billing"],
+        "confidence": 0.91,
+        "synthesized": "2026-03-31T10:01:45Z",
+        "model": "gemma3:4b",
+    }
+    sentinel_scribe.write_draft(drafts_dir, draft, draft_meta)
+    path = os.path.join(drafts_dir, "no-billing-edits.draft.yaml")
+    assert os.path.exists(path)
+    with open(path) as f:
+        loaded = yaml.safe_load(f)
+    assert loaded["id"] == "no-billing-edits"
+    assert loaded["trigger"] == "file_write"
+    assert loaded["_draft"]["source"] == "user_prompt"
+    assert loaded["_draft"]["confidence"] == 0.91
+
+
+def test_build_synthesis_prompt():
+    import sentinel_scribe
+    observation = {
+        "statement": "Never edit billing directly",
+        "scope_hint": "src/billing",
+        "trigger_hint": "file_write",
+        "evidence": "don't touch billing",
+    }
+    prompt = sentinel_scribe.build_synthesis_prompt(
+        observation=observation,
+        matched_files=["src/billing/invoice.ts", "src/billing/payment.ts"],
+        sample_rules=[{"id": "test-rule", "trigger": "bash", "scope": ["git *"], "prompt": "test"}],
+    )
+    assert "Never edit billing directly" in prompt
+    assert "src/billing/invoice.ts" in prompt
+    assert "test-rule" in prompt
+    assert "file_write|bash|mcp|any" in prompt
