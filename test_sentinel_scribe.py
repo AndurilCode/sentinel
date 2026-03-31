@@ -111,3 +111,77 @@ def test_dismiss_uses_scope_trigger_match(scribe_dir):
     import sentinel_scribe
     sentinel_scribe.add_dismissal(scribe_dir, "src/billing/**", "file_write", "billing protection")
     assert sentinel_scribe.is_dismissed(scribe_dir, "src/billing/**", "bash") is False
+
+
+def test_build_context_window_from_transcript(tmp_path):
+    """Should read last N events before the human prompt."""
+    import sentinel_scribe
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "src/api/routes.ts"}}
+        ]}, "timestamp": "T1"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "npm test"}}
+        ]}, "timestamp": "T2"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Tests are failing. Should I modify the test fixtures?"}
+        ]}, "timestamp": "T3"},
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    window = sentinel_scribe.build_context_window(str(transcript), max_events=5)
+    assert len(window) == 3
+    assert "Edit" in window[0]
+    assert "Bash" in window[1] or "npm test" in window[1]
+    assert "test fixtures" in window[2]
+
+
+def test_build_context_window_limits_events(tmp_path):
+    """Should only return up to max_events entries."""
+    import sentinel_scribe
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": f"msg {i}"}, "timestamp": f"T{i}"}
+        for i in range(10)
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    window = sentinel_scribe.build_context_window(str(transcript), max_events=3)
+    assert len(window) == 3
+    # Should be the LAST 3 events
+    assert "msg 7" in window[0]
+    assert "msg 8" in window[1]
+    assert "msg 9" in window[2]
+
+
+def test_build_context_window_missing_transcript():
+    """Should return empty list for missing transcript."""
+    import sentinel_scribe
+    window = sentinel_scribe.build_context_window("/nonexistent/path.jsonl", max_events=5)
+    assert window == []
+
+
+def test_build_context_window_skips_meta_tools(tmp_path):
+    """Meta tools (TaskCreate, Skill, etc.) should be filtered out."""
+    import sentinel_scribe
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "TaskCreate", "input": {"subject": "test"}}
+        ]}, "timestamp": "T1"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Write", "input": {"file_path": "src/app.py"}}
+        ]}, "timestamp": "T2"},
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    window = sentinel_scribe.build_context_window(str(transcript), max_events=5)
+    assert len(window) == 1
+    assert "Write" in window[0] or "app.py" in window[0]

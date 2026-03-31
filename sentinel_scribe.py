@@ -191,3 +191,52 @@ def is_dismissed(scribe_dir: str, scope: str, trigger: str) -> bool:
             except json.JSONDecodeError:
                 continue
     return False
+
+
+# ── Context window assembly ─────────────────────────────────────────
+
+from sentinel_context import compact_event
+
+
+def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]:
+    """Read transcript JSONL and return the last N compacted events as strings.
+
+    Returns a list of human-readable one-liners for the classification prompt.
+    Reads the entire transcript and takes the tail — transcripts are small
+    enough that this is faster than seeking backwards in JSONL.
+    """
+    if not os.path.exists(transcript_path):
+        return []
+
+    compacted = []
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                evt = compact_event(entry)
+                if evt:
+                    compacted.append(evt)
+    except OSError:
+        return []
+
+    # Take the last max_events entries
+    tail = compacted[-max_events:] if len(compacted) > max_events else compacted
+
+    # Format each event as a one-liner
+    lines = []
+    for evt in tail:
+        trigger = evt.get("trigger", "")
+        text = evt.get("text", "")
+        if trigger == "user":
+            lines.append(f"[human] {text}")
+        elif trigger == "stop":
+            lines.append(f"[assistant] {text}")
+        else:
+            lines.append(f"[{trigger}] {text}")
+    return lines
