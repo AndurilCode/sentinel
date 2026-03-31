@@ -10,3 +10,4 @@ build/
 venv/
 .sentinel/
 .claude/sentinel/dedup/
+.claude/sentinel/sentinel.log

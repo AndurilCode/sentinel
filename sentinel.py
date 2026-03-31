@@ -722,21 +722,20 @@ def _read_session_context(session_id: str, config: dict) -> Optional[dict]:
 _DEDUP_TTL_S = 30  # suppress duplicate info for same (rule, target) within this window
 
 
-def _dedup_dir(session_id: str) -> str:
-    """Dedup cache dir, co-located with sentinel config."""
-    config_dir = _find_config_dir()
-    if not config_dir:
+def _dedup_dir(session_id: str, config: dict) -> str:
+    """Dedup cache dir, inside the session's .sentinel folder."""
+    d = _session_dir(session_id, config)
+    if not d:
         return ""
-    safe_id = _sanitize_session_id(session_id)
-    d = os.path.join(config_dir, "dedup", safe_id)
-    os.makedirs(d, exist_ok=True)
-    return d
+    dedup = os.path.join(d, "dedup")
+    os.makedirs(dedup, exist_ok=True)
+    return dedup
 
 
 def _dedup_check(session_id: str, rule_id: str, target: str,
                  config: dict) -> bool:
     """Return True if this (rule, target) was seen recently and should be skipped."""
-    d = _dedup_dir(session_id)
+    d = _dedup_dir(session_id, config)
     if not d:
         return False
     path = os.path.join(d, "info_dedup.json")
