@@ -56,7 +56,8 @@ Agent (Claude Code,                  Sentinel                          Ollama
 ```yaml
 id: rule-name                    # unique identifier (defaults to filename stem)
 trigger: file_write              # file_write | bash | mcp | any
-severity: block                  # block (exit 2) | warn (exit 0 + message)
+severity: block                  # block (exit 2) | warn (exit 0 + message) | info (context only)
+post: true                       # optional — info rules only; opt into PostToolUse synthesis
 scope:                           # glob patterns — rule fires if any match
   - "src/core/billing/**"
   - "**/payments/*.ts"
@@ -70,20 +71,57 @@ prompt: |                        # evaluation prompt with {{template_vars}}
   Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
 ```
 
+### Info severity
+
+`severity: info` rules provide contextual advice to the agent without blocking or warning. Two modes:
+
+**PreToolUse static** — No LLM call. The `prompt` field is rendered with template variables and returned as `additionalContext`. Zero latency. Use for ownership notices, team contacts, or policy reminders tied to a path.
+
+```yaml
+id: payments-ownership
+trigger: file_write
+severity: info
+scope:
+  - "src/payments/**"
+prompt: |
+  This directory is owned by the Payments team.
+  Changes require review from @payments-team. Slack: #payments-eng
+```
+
+**PostToolUse synthesized** — Add `post: true` to the rule. After the tool executes, `sentinel.py --post` reads the session context summary and the tool's output, calls Ollama with the rule's domain-knowledge prompt, and returns `additionalContext`. The expected prompt response format is `{"context": "your message (max 80 words)"}`.
+
+```yaml
+id: migration-awareness
+trigger: file_write
+severity: info
+post: true
+scope:
+  - "**/migrations/**"
+prompt: |
+  DOMAIN KNOWLEDGE: OpenAPI spec at api/v2/openapi.yaml must reflect DB changes.
+  CHANGELOG.md must be updated for any migration.
+
+  Based on the session context and the tool action,
+  provide a brief, relevant contextual reminder.
+  Respond with JSON: {"context": "your message (max 80 words)"}
+```
+
 ### Template variables by trigger type
 
-| Variable | `file_write` | `bash` | `mcp` |
-|---|---|---|---|
-| `{{file_path}}` | target path | — | — |
-| `{{content_snippet}}` | first N chars | — | — |
-| `{{content_length}}` | total chars | — | — |
-| `{{command}}` | — | full command | — |
-| `{{server_name}}` | — | — | MCP server |
-| `{{mcp_tool}}` | — | — | MCP tool name |
-| `{{mcp_arguments}}` | — | — | args JSON (truncated) |
-| `{{action_summary}}` | all | all | all |
-| `{{tool_name}}` | all | all | all |
-| `{{trigger}}` | all | all | all |
+| Variable | `file_write` | `bash` | `mcp` | Notes |
+|---|---|---|---|---|
+| `{{file_path}}` | target path | — | — | |
+| `{{content_snippet}}` | first N chars | — | — | |
+| `{{content_length}}` | total chars | — | — | |
+| `{{command}}` | — | full command | — | |
+| `{{server_name}}` | — | — | MCP server | |
+| `{{mcp_tool}}` | — | — | MCP tool name | |
+| `{{mcp_arguments}}` | — | — | args JSON (truncated) | |
+| `{{action_summary}}` | all | all | all | |
+| `{{tool_name}}` | all | all | all | |
+| `{{trigger}}` | all | all | all | |
+| `{{tool_output}}` | — | — | — | PostToolUse only (`post: true`) |
+| `{{session_context}}` | — | — | — | PostToolUse only (`post: true`) |
 
 ### Scope matching by trigger type
 
@@ -111,6 +149,11 @@ prompt: |                        # evaluation prompt with {{template_vars}}
 | `tool_map` | *(see below)* | Tool name → trigger type mapping |
 | `mcp_prefix` | `mcp__` | Prefix for detecting MCP tool names |
 | `mcp_separator` | `__` | Separator for parsing MCP server/tool from tool name |
+| `context.enabled` | `true` | Enable session context accumulator |
+| `context.model` | `gemma3:4b` | Ollama model for accumulator (can differ from judge model) |
+| `context.min_events` | `3` | Minimum new events before accumulator updates the summary |
+| `context.lock_timeout_s` | `30` | Max seconds to wait for GPU lock before skipping update |
+| `context.summary_max_words` | `150` | Token budget for rolling session summary |
 
 ### Multi-agent tool mapping
 
@@ -159,6 +202,26 @@ Each evaluation appends one JSONL line:
   "model": "gemma3:4b"
 }
 ```
+
+## Session context accumulator
+
+`sentinel_context.py` maintains a rolling summary of the agent's session for use by PostToolUse `info` rules. It runs on the `Stop` hook, async and non-blocking, so it never delays the agent.
+
+On each `Stop` event it reads new transcript entries since the last checkpoint, compacts them (stripping meta-tools and raw payloads), and calls Ollama to produce an updated summary. The summary is written to `.sentinel/sessions/<session_id>/summary.json` and consumed by `sentinel.py --post` when evaluating `post: true` info rules.
+
+If the summary doesn't exist yet (early in a session), the synthesizer runs using the rule's domain knowledge alone.
+
+### GPU coordination
+
+Three consumers share a single flock-based lockfile (`.sentinel/sessions/<session_id>/ollama.lock`):
+
+| Consumer | Priority | Lock behavior |
+|---|---|---|
+| Judge (`block`/`warn`) | P0 | Non-blocking try — proceeds regardless if locked |
+| Synthesizer (`info post`) | P1 | Blocks up to 5 s, skips on timeout |
+| Accumulator | P2 | Blocks up to 30 s, skips on timeout (catches up next Stop) |
+
+The judge is on the critical path and must never wait. The synthesizer is advisory but synchronous — a brief wait is acceptable. The accumulator is async and eventually consistent.
 
 ## Writing effective rules
 
