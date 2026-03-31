@@ -28,6 +28,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+
+# Lazy import for draft notifications (only when needed)
+def _check_scribe_drafts(session_id: str, config: dict, config_dir: str) -> Optional[str]:
+    """Check for pending Scribe drafts — returns notification or None."""
+    try:
+        from sentinel_scribe import check_pending_drafts
+        scribe_cfg = config.get("scribe", {})
+        if not scribe_cfg.get("enabled", True):
+            return None
+        drafts_dir = os.path.join(config_dir, "drafts")
+        session_d = _session_dir(session_id, config)
+        max_age = scribe_cfg.get("notification", {}).get("max_age_days", 7)
+        return check_pending_drafts(drafts_dir, session_d, max_age)
+    except ImportError:
+        return None
+
+
 try:
     import yaml
 except ImportError:
@@ -895,6 +912,10 @@ def main_pre(raw_data: dict, rules: list, config: dict):
             sys.exit(0)
 
     # No violations from judge rules — output info context if any, then exit
+    # Check for Scribe draft notifications
+    draft_note = _check_scribe_drafts(session_id, config, _find_config_dir()) if _find_config_dir() else None
+    if draft_note:
+        info_contexts.append(draft_note)
     if info_contexts:
         print(format_decision_info("\n\n".join(info_contexts), agent_format))
     sys.exit(0)
@@ -937,8 +958,21 @@ def main_post(raw_data: dict, rules: list, config: dict):
             contexts.append(result)
 
     if not contexts:
+        config_dir_val = _find_config_dir()
+        draft_note = _check_scribe_drafts(session_id, config, config_dir_val) if config_dir_val else None
+        if draft_note:
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": draft_note,
+                }
+            }))
         sys.exit(0)
 
+    config_dir_val = _find_config_dir()
+    draft_note = _check_scribe_drafts(session_id, config, config_dir_val) if config_dir_val else None
+    if draft_note:
+        contexts.append(draft_note)
     combined = "\n".join(contexts)
     print(json.dumps({
         "hookSpecificOutput": {

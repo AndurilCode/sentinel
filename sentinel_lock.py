@@ -1,10 +1,11 @@
 """
 GPU coordination lock for Sentinel.
 
-Three priority levels share one flock-based lock:
+Four priority levels share one flock-based lock:
   P0 (Judge)       — non-blocking try, proceeds regardless
   P1 (Synthesizer) — blocking with short timeout
   P2 (Accumulator) — blocking with long timeout
+  P3 (Scribe)      — blocking with medium timeout (lowest priority)
 """
 
 import fcntl
@@ -18,12 +19,14 @@ class LockPriority(IntEnum):
     P0_JUDGE = 0
     P1_SYNTHESIZER = 1
     P2_ACCUMULATOR = 2
+    P3_SCRIBE = 3
 
 
 _DEFAULT_TIMEOUTS = {
     LockPriority.P0_JUDGE: 0,
     LockPriority.P1_SYNTHESIZER: 5,
     LockPriority.P2_ACCUMULATOR: 30,
+    LockPriority.P3_SCRIBE: 10,
 }
 
 

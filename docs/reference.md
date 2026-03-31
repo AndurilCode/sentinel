@@ -259,3 +259,55 @@ your-repo/
         └── rules/
             └── *.yaml             # Your rules
 ```
+
+## Scribe — rule learning from observations
+
+Scribe watches agent sessions and proposes new rules based on patterns it observes. It runs passively, collecting observations, and surfaces draft rules for human review.
+
+### Scribe configuration
+
+Add a `scribe` block to your `.claude/sentinel/config.yaml`:
+
+| Key | Default | Description |
+|---|---|---|
+| `scribe.enabled` | `false` | Enable the Scribe observation pipeline |
+| `scribe.model` | `gemma3:4b` | Ollama model used for observation analysis and draft generation |
+| `scribe.observe_interval` | `5` | Number of tool events between observation snapshots |
+| `scribe.max_drafts` | `20` | Maximum number of draft rules to keep before oldest are pruned |
+| `scribe.auto_observe` | `true` | Automatically collect observations during sessions |
+| `scribe.min_observations` | `3` | Minimum observations before a draft rule can be generated |
+
+Example:
+
+```yaml
+scribe:
+  enabled: true
+  model: "gemma3:4b"
+  observe_interval: 5
+  max_drafts: 20
+```
+
+### Slash commands
+
+#### `/sentinel-learn`
+
+Start or stop the Scribe learning mode for the current session. When active, Scribe observes tool events and records patterns that might warrant new rules.
+
+#### `/sentinel-drafts`
+
+List all draft rules that Scribe has generated. Each draft shows the proposed rule ID, trigger type, scope, and the observations that motivated it. Drafts are stored in `.claude/sentinel/drafts/`.
+
+#### `/sentinel-promote`
+
+Promote a draft rule to a live rule. The draft is validated, moved from `.claude/sentinel/drafts/` into the active `rules/` directory, and becomes part of the evaluation pipeline immediately.
+
+#### `/sentinel-dismiss`
+
+Dismiss a draft rule that is not useful. The draft is removed from `.claude/sentinel/drafts/` so it no longer appears in the drafts list.
+
+### File locations
+
+| Path | Purpose |
+|---|---|
+| `.claude/sentinel/drafts/` | Draft rules proposed by Scribe, pending human review |
+| `.sentinel/scribe/` | Internal Scribe state — observations, analysis cache, and session data |

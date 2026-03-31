@@ -72,3 +72,33 @@ def test_p1_times_out():
         t.join()
     finally:
         os.unlink(lock_path)
+
+
+def test_p3_scribe_times_out():
+    """P3 (scribe) times out after waiting when lock is held."""
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        lock_path = f.name
+    try:
+        held = threading.Event()
+        release_evt = threading.Event()
+
+        def hold_lock():
+            fd = acquire_lock(lock_path, LockPriority.P2_ACCUMULATOR)
+            held.set()
+            release_evt.wait()
+            release_lock(fd)
+
+        t = threading.Thread(target=hold_lock)
+        t.start()
+        held.wait()
+
+        t0 = time.monotonic()
+        fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE, timeout_s=1)
+        elapsed = time.monotonic() - t0
+        assert fd is None
+        assert elapsed >= 0.9
+
+        release_evt.set()
+        t.join()
+    finally:
+        os.unlink(lock_path)
