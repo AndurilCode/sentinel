@@ -656,6 +656,21 @@ def format_decision(report: str, blockers: bool, agent_format: str) -> Optional[
     })
 
 
+def format_decision_info(context: str, agent_format: str) -> str:
+    """Format info-only output — always additionalContext, never deny."""
+    if agent_format == "copilot":
+        return json.dumps({
+            "permissionDecision": "allow",
+            "permissionDecisionReason": context,
+        })
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": context,
+        }
+    })
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 def _ollama_reachable(config: dict) -> bool:
@@ -708,17 +723,6 @@ def main():
 
     event_data, agent_format = normalize_input(raw_data)
 
-    # Pre-flight: avoid N timeouts per rule when Ollama is not running
-    if not _ollama_reachable(config):
-        if config.get("fail_open", True):
-            _debug("Ollama unreachable, fail_open=true, skipping all rules", config)
-            sys.exit(0)
-        else:
-            print(format_decision(
-                "SENTINEL: Ollama is not reachable (fail_open: false)",
-                blockers=True, agent_format=agent_format,
-            ))
-            sys.exit(0)
     event = parse_event(event_data, config)
 
     # Filter applicable rules
@@ -726,28 +730,60 @@ def main():
     if not matching:
         sys.exit(0)
 
-    # Initialize concurrency gate for Ollama calls
-    global _ollama_semaphore
-    _ollama_semaphore = threading.Semaphore(config.get("ollama_concurrency", 1))
+    # Split info rules (static context, no LLM) from judge rules (need Ollama)
+    info_rules = [r for r in matching if r.get("severity") == "info" and not r.get("post")]
+    judge_rules = [r for r in matching if r.get("severity") != "info"]
 
-    # Parallel evaluation (semaphore gates actual Ollama calls)
-    violations = []
-    with ThreadPoolExecutor(max_workers=config["max_parallel"]) as pool:
-        futures = {
-            pool.submit(evaluate_rule, r, event, config): r
-            for r in matching
-        }
-        for fut in as_completed(futures):
-            result = fut.result()
-            if result is not None:
-                violations.append(result)
+    # Render info rules as static context (no Ollama required)
+    info_contexts = []
+    for r in info_rules:
+        rendered = render_prompt(r, event, config)
+        info_contexts.append(f"[{r['id']}] {rendered}")
 
-    if not violations:
-        sys.exit(0)  # all clear, silent
+    # Pre-flight: avoid N timeouts per rule when Ollama is not running
+    # Only needed if there are judge rules to evaluate
+    if judge_rules:
+        if not _ollama_reachable(config):
+            if config.get("fail_open", True):
+                _debug("Ollama unreachable, fail_open=true, skipping judge rules", config)
+                # Still output info context if any
+                if info_contexts:
+                    print(format_decision_info("\n\n".join(info_contexts), agent_format))
+                sys.exit(0)
+            else:
+                fail_msg = "SENTINEL: Ollama is not reachable (fail_open: false)"
+                if info_contexts:
+                    fail_msg = "\n\n".join(info_contexts) + "\n\n" + fail_msg
+                print(format_decision(fail_msg, blockers=True, agent_format=agent_format))
+                sys.exit(0)
 
-    report = format_report(violations)
-    blockers = any(v["severity"] == "block" for v in violations)
-    print(format_decision(report, blockers, agent_format))
+        # Initialize concurrency gate for Ollama calls
+        global _ollama_semaphore
+        _ollama_semaphore = threading.Semaphore(config.get("ollama_concurrency", 1))
+
+        # Parallel evaluation (semaphore gates actual Ollama calls)
+        violations = []
+        with ThreadPoolExecutor(max_workers=config["max_parallel"]) as pool:
+            futures = {
+                pool.submit(evaluate_rule, r, event, config): r
+                for r in judge_rules
+            }
+            for fut in as_completed(futures):
+                result = fut.result()
+                if result is not None:
+                    violations.append(result)
+
+        if violations:
+            report = format_report(violations)
+            if info_contexts:
+                report = "\n\n".join(info_contexts) + "\n\n" + report
+            blockers = any(v["severity"] == "block" for v in violations)
+            print(format_decision(report, blockers, agent_format))
+            sys.exit(0)
+
+    # No violations from judge rules — output info context if any, then exit
+    if info_contexts:
+        print(format_decision_info("\n\n".join(info_contexts), agent_format))
     sys.exit(0)
 
 

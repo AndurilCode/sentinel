@@ -3,12 +3,43 @@
 import json
 import os
 import sys
+import subprocess
 import pytest
 from unittest.mock import patch, MagicMock
 
 # Import sentinel module
 sys.path.insert(0, os.path.dirname(__file__))
 import sentinel
+
+
+def run_sentinel(event_json: str, config_dir: str = None, env_extra: dict = None) -> str:
+    """Run sentinel.py with event on stdin, return stdout."""
+    env = os.environ.copy()
+    if config_dir:
+        env["SENTINEL_CONFIG_DIR"] = config_dir
+    if env_extra:
+        env.update(env_extra)
+    proc = subprocess.run(
+        [sys.executable, "sentinel.py"],
+        input=event_json, capture_output=True, text=True, env=env,
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    return proc.stdout
+
+
+def run_sentinel_post(event_json: str, config_dir: str = None, env_extra: dict = None) -> str:
+    """Run sentinel.py --post with event on stdin, return stdout."""
+    env = os.environ.copy()
+    if config_dir:
+        env["SENTINEL_CONFIG_DIR"] = config_dir
+    if env_extra:
+        env.update(env_extra)
+    proc = subprocess.run(
+        [sys.executable, "sentinel.py", "--post"],
+        input=event_json, capture_output=True, text=True, env=env,
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    return proc.stdout
 
 
 # ── Fixtures ───────────────────────────────────────────────────────
@@ -825,3 +856,25 @@ class TestFail:
         config = {"fail_open": False}
         result = sentinel._fail(rule, "Sentinel timeout: timed out", config)
         assert "timeout" in result["reason"]
+
+
+class TestInfoRules:
+    def test_info_rule_returns_additional_context(self, tmp_path):
+        """Info rules on PreToolUse return additionalContext with rendered prompt, no LLM."""
+        config_dir = tmp_path / ".claude" / "sentinel"
+        rules_dir = config_dir / "rules"
+        rules_dir.mkdir(parents=True)
+        (config_dir / "config.yaml").write_text("model: gemma3:4b\n")
+        (rules_dir / "ownership.yaml").write_text(
+            'id: ownership\ntrigger: file_write\nseverity: info\nscope:\n  - "src/payments/**"\nprompt: |\n  Owned by Payments team. Contact: @payments-team\n'
+        )
+        event_json = json.dumps({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "src/payments/charge.py", "content": "def charge(): pass"}
+        })
+        result = run_sentinel(event_json, config_dir=str(config_dir))
+        output = json.loads(result)
+        assert "hookSpecificOutput" in output
+        assert "additionalContext" in output["hookSpecificOutput"]
+        assert "Payments team" in output["hookSpecificOutput"]["additionalContext"]
+        assert "permissionDecision" not in output["hookSpecificOutput"]
