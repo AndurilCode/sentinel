@@ -1,0 +1,25 @@
+id: avoid-heuristics-in-prompts
+trigger: file_write
+severity: block
+model: "gemma3:12b"
+scope:
+  - "sentinel*.py"
+exclude:
+  - "test_*"
+prompt: |
+  The developer has a strict convention: user prompt content must NEVER be
+  classified using hard-coded heuristics (keyword lists, regex patterns,
+  substring checks, or pattern matching). All user prompt classification
+  must go through an LLM call (Ollama). The only acceptable deterministic
+  logic on prompt content is post-LLM normalization and confidence thresholds.
+
+  Reason: users write in many languages and with varied wording, making
+  coded heuristics unreliable.
+
+  File: {{file_path}}
+  Content: {{content_snippet}}
+
+  Does this code introduce keyword matching, regex, or any deterministic
+  heuristic that classifies or gates behavior based on user prompt content?
+
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
