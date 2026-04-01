@@ -74,5 +74,5 @@ context:
 scribe:
   enabled: true
   # model: "gemma3:4b"             # default for all scribe steps
-  # extraction_model: "gemma3:4b"  # override for extraction (observe + learn)
-  # synthesis_model: "gemma3:12b"  # override for synthesis (rule drafting)
+  extraction_model: "gemma3:4b"  # override for extraction (observe + learn)
+  synthesis_model: "gemma3:12b"  # override for synthesis (rule drafting)
