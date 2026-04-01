@@ -37,6 +37,22 @@ View or update the Sentinel configuration in the current repository.
 | `context.min_events` | `3` | Minimum events before accumulator update |
 | `context.lock_timeout_s` | `30` | Max wait for GPU lock |
 | `context.summary_max_words` | `150` | Token budget for rolling summary |
+| `scribe.enabled` | `true` | Enable the Scribe convention learning pipeline |
+| `scribe.model` | *(top-level model)* | Default Ollama model for all scribe steps |
+| `scribe.extraction_model` | *(scribe.model)* | Override for extraction (reflect + learn) |
+| `scribe.synthesis_model` | *(scribe.model)* | Override for validation + synthesis |
+| `scribe.guidance` | `null` | Priority guidance text for extraction |
+| `scribe.think` | `false` | Enable /think mode for validation+synthesis |
+| `scribe.extraction_timeout_ms` | `15000` | Timeout for extraction LLM calls |
+| `scribe.extraction_num_predict` | `1000` | Max output tokens for extraction |
+| `scribe.synthesis_timeout_ms` | `15000` | Timeout for validation+synthesis LLM calls |
+| `scribe.synthesis_num_predict` | `1000` | Max output tokens for validation+synthesis |
+| `scribe.temperature` | `0.1` | LLM temperature for all scribe calls |
+| `scribe.transcript_budget_chars` | `4000` | Max compacted transcript size before truncation |
+| `scribe.thresholds.extraction_confidence` | `0.7` | Minimum confidence to store an observation |
+| `scribe.thresholds.draft_confidence` | `0.8` | Minimum confidence for learn mode drafts |
+| `scribe.sources.documentation` | `true` | Enable doc scanning via /sentinel-learn |
+| `scribe.notification.max_age_days` | `7` | Max age for draft notifications |
 
 ## Model recommendations
 

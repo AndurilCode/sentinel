@@ -238,14 +238,23 @@ The judge is on the critical path and must never wait. The synthesizer is adviso
 ```
 sentinel/                          # Plugin (installed by Claude Code)
 ├── .claude-plugin/plugin.json     # Plugin manifest
-├── hooks/hooks.json               # PreToolUse hook registration
-├── sentinel.py                    # Evaluator script
+├── hooks/hooks.json               # PreToolUse, PostToolUse, Stop hooks
+├── sentinel.py                    # Rule evaluator (PreToolUse + PostToolUse)
+├── sentinel_context.py            # Session context accumulator (Stop hook)
+├── sentinel_scribe.py             # Convention extraction + draft rules (Stop hook + /sentinel-learn)
+├── sentinel_lock.py               # GPU coordination lock
+├── sentinel_log.py                # Shared JSONL logging
 ├── examples/                      # Reference rules
 │   └── *.yaml
 └── skills/                        # Slash commands
     ├── sentinel-init/SKILL.md
     ├── sentinel-rule/SKILL.md
-    └── sentinel-config/SKILL.md
+    ├── sentinel-config/SKILL.md
+    ├── sentinel-learn/SKILL.md
+    ├── sentinel-drafts/SKILL.md
+    ├── sentinel-promote/SKILL.md
+    ├── sentinel-dismiss/SKILL.md
+    └── sentinel-stats/SKILL.md
 ```
 
 ## Repository layout (your repo)
@@ -260,54 +269,89 @@ your-repo/
             └── *.yaml             # Your rules
 ```
 
-## Scribe — rule learning from observations
+## Scribe — convention learning from sessions and documentation
 
-Scribe watches agent sessions and proposes new rules based on patterns it observes. It runs passively, collecting observations, and surfaces draft rules for human review.
+Scribe analyzes agent sessions and documentation to extract conventions, then proposes draft Sentinel rules for human review. It runs at session end (`Stop` hook) and looks for two types of signals:
+
+1. **Human-expressed rules** — the developer states a permanent convention ("never do X", "always do Y")
+2. **Agent self-corrections** — the agent makes a mistake and corrects itself (tool error → fix, write → revise, test failure → code fix)
+
+### How it works
+
+At session end, Scribe reads the full compacted transcript and runs a two-phase pipeline:
+
+1. **Extraction** — one LLM call classifies the session transcript for conventions
+2. **Validation** — for each extracted convention, checks structural dedup (dismissed list, existing rules), then calls the LLM to judge semantic redundancy against active rules and generate a draft YAML if not redundant
+
+Separately, `/sentinel-learn` scans documentation files (CLAUDE.md, ADRs, READMEs) for conventions using the same extraction → synthesis pipeline.
 
 ### Scribe configuration
 
-Add a `scribe` block to your `.claude/sentinel/config.yaml`:
-
 | Key | Default | Description |
 |---|---|---|
-| `scribe.enabled` | `false` | Enable the Scribe observation pipeline |
-| `scribe.model` | `gemma3:4b` | Ollama model used for observation analysis and draft generation |
-| `scribe.observe_interval` | `5` | Number of tool events between observation snapshots |
-| `scribe.max_drafts` | `20` | Maximum number of draft rules to keep before oldest are pruned |
-| `scribe.auto_observe` | `true` | Automatically collect observations during sessions |
-| `scribe.min_observations` | `3` | Minimum observations before a draft rule can be generated |
+| `scribe.enabled` | `true` | Enable the Scribe pipeline |
+| `scribe.model` | *(top-level model)* | Default Ollama model for all scribe steps |
+| `scribe.extraction_model` | *(scribe.model)* | Override for extraction (reflect + learn) |
+| `scribe.synthesis_model` | *(scribe.model)* | Override for validation + synthesis |
+| `scribe.guidance` | `null` | Priority guidance text for extraction (e.g., "focus on security") |
+| `scribe.think` | `false` | Enable /think mode for validation+synthesis |
+| `scribe.extraction_timeout_ms` | `15000` | Timeout for extraction LLM calls |
+| `scribe.extraction_num_predict` | `1000` | Max output tokens for extraction |
+| `scribe.synthesis_timeout_ms` | `15000` | Timeout for validation+synthesis LLM calls |
+| `scribe.synthesis_num_predict` | `1000` | Max output tokens for validation+synthesis |
+| `scribe.temperature` | `0.1` | LLM temperature for all scribe calls |
+| `scribe.transcript_budget_chars` | `4000` | Max compacted transcript size before truncation |
+| `scribe.thresholds.extraction_confidence` | `0.7` | Minimum confidence to store an observation |
+| `scribe.thresholds.draft_confidence` | `0.8` | Minimum confidence for learn mode draft generation |
+| `scribe.sources.documentation` | `true` | Enable documentation scanning via `/sentinel-learn` |
+| `scribe.doc_globs` | `[CLAUDE.md, AGENTS.md, README.md, docs/**/*.md, ADR*.md]` | File patterns for `/sentinel-learn` |
+| `scribe.notification.max_age_days` | `7` | Max age for draft notifications |
+
+Model resolution order: `scribe.<step>_model` → `scribe.model` → top-level `model` → `gemma3:4b`
 
 Example:
 
 ```yaml
 scribe:
   enabled: true
-  model: "gemma3:4b"
-  observe_interval: 5
-  max_drafts: 20
+  extraction_model: "gemma3:4b"
+  synthesis_model: "gemma3:12b"
+  guidance: "focus on security boundaries and data access patterns"
 ```
+
+### GPU coordination
+
+Scribe uses priority P3 (lowest) for GPU lock acquisition:
+
+| Consumer | Priority | Lock behavior |
+|---|---|---|
+| Judge (`block`/`warn`) | P0 | Non-blocking try — proceeds regardless |
+| Synthesizer (`info post`) | P1 | Blocks up to 5 s |
+| Accumulator | P2 | Blocks up to 30 s |
+| Scribe | P3 | Blocks up to 10 s, skips on timeout |
 
 ### Slash commands
 
 #### `/sentinel-learn`
 
-Start or stop the Scribe learning mode for the current session. When active, Scribe observes tool events and records patterns that might warrant new rules.
+Scan repository documentation files for conventions and generate draft rules. Scans files matching `scribe.doc_globs` in config.
 
 #### `/sentinel-drafts`
 
-List all draft rules that Scribe has generated. Each draft shows the proposed rule ID, trigger type, scope, and the observations that motivated it. Drafts are stored in `.claude/sentinel/drafts/`.
+List all pending draft rules. Each draft shows ID, trigger, scope, source (`user_feedback`, `agent_self_correction`, or `documentation`), age, and evidence.
 
-#### `/sentinel-promote`
+#### `/sentinel-promote <id>`
 
-Promote a draft rule to a live rule. The draft is validated, moved from `.claude/sentinel/drafts/` into the active `rules/` directory, and becomes part of the evaluation pipeline immediately.
+Promote a draft rule to active. Moves the draft from `.claude/sentinel/drafts/` to `rules/` — it becomes part of the evaluation pipeline immediately.
 
-#### `/sentinel-dismiss`
+#### `/sentinel-dismiss <id>`
 
-Dismiss a draft rule that is not useful. The draft is removed from `.claude/sentinel/drafts/` so it no longer appears in the drafts list.
+Dismiss a draft rule. Removes the draft and adds it to the dismissed blocklist so it won't be re-proposed.
 
 ### File locations
 
 | Path | Purpose |
 |---|---|
 | `.claude/sentinel/drafts/` | Draft rules proposed by Scribe, pending human review |
-| `.sentinel/scribe/` | Internal Scribe state — observations, analysis cache, and session data |
+| `.sentinel/scribe/observations.jsonl` | Convention observations with provenance |
+| `.sentinel/scribe/dismissed.jsonl` | Dismissed convention blocklist |
