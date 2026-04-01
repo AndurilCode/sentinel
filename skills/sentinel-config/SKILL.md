@@ -27,11 +27,15 @@ View or update the Sentinel configuration in the current repository.
 | `timeout_ms` | `5000` | Per-rule evaluation timeout |
 | `confidence_threshold` | `0.7` | Minimum confidence to count as violation |
 | `max_parallel` | `4` | Concurrent Ollama calls |
+| `ollama_concurrency` | `1` | Max concurrent Ollama HTTP calls (GPU-bound) |
 | `think` | `false` | Enable /think mode (slower, more accurate) |
 | `fail_open` | `true` | Skip rule on error vs block |
 | `content_max_chars` | `800` | File content truncation in prompts |
 | `log_file` | `null` | JSONL telemetry path |
 | `rules_dir` | `rules` | Rules directory (relative to config dir) |
+| `tool_map` | *(see reference.md)* | Tool name → trigger type mapping |
+| `mcp_prefix` | `mcp__` | Prefix for detecting MCP tool names |
+| `mcp_separator` | `__` | Separator for parsing MCP server/tool from tool name |
 | `context.enabled` | `true` | Enable session context accumulator |
 | `context.model` | `gemma3:4b` | Ollama model for accumulator |
 | `context.min_events` | `3` | Minimum events before accumulator update |
@@ -52,6 +56,7 @@ View or update the Sentinel configuration in the current repository.
 | `scribe.thresholds.extraction_confidence` | `0.7` | Minimum confidence to store an observation |
 | `scribe.thresholds.draft_confidence` | `0.8` | Minimum confidence for learn mode drafts |
 | `scribe.sources.documentation` | `true` | Enable doc scanning via /sentinel-learn |
+| `scribe.doc_globs` | `[CLAUDE.md, AGENTS.md, ...]` | File patterns for /sentinel-learn |
 | `scribe.notification.max_age_days` | `7` | Max age for draft notifications |
 
 ## Model recommendations

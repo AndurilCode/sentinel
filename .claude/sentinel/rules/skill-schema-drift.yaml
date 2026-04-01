@@ -5,6 +5,7 @@ post: true
 scope:
   - "sentinel.py"
   - "sentinel_context.py"
+  - "sentinel_scribe.py"
   - "sentinel_lock.py"
   - "docs/reference.md"
 exclude:
