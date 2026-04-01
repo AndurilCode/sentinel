@@ -703,3 +703,52 @@ def test_check_pending_drafts_skips_old_drafts(config_dir, tmp_path):
 
     notification = sentinel_scribe.check_pending_drafts(drafts_dir, session_dir, 7)
     assert notification is None
+
+
+def test_read_compacted_transcript(tmp_path):
+    """Should read and compact full transcript with budget truncation."""
+    import sentinel_scribe
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "Add a login page"}, "timestamp": "T1"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Write", "input": {"file_path": "src/login.py"}}
+        ]}, "timestamp": "T2"},
+        {"type": "user", "message": {"role": "user", "content": json.dumps([
+            {"tool_use_id": "tu_1", "type": "tool_result", "content": "File written"}
+        ])}, "timestamp": "T3"},
+        {"type": "user", "message": {"role": "user", "content": "never use eval"}, "timestamp": "T4"},
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    result = sentinel_scribe.read_compacted_transcript(str(transcript), budget_chars=10000)
+    assert "[human] Add a login page" in result
+    assert "[assistant]" in result
+    assert "[result]" in result
+    assert "[human] never use eval" in result
+
+
+def test_read_compacted_transcript_truncation(tmp_path):
+    """Should truncate long transcripts keeping head + tail."""
+    import sentinel_scribe
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": f"message {i}" * 20}, "timestamp": f"T{i}"}
+        for i in range(50)
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    result = sentinel_scribe.read_compacted_transcript(str(transcript), budget_chars=500)
+    assert len(result) <= 600  # some tolerance for the truncation marker
+    assert "truncated" in result.lower()
+
+
+def test_read_compacted_transcript_missing_file():
+    """Should return empty string for missing transcript."""
+    import sentinel_scribe
+    result = sentinel_scribe.read_compacted_transcript("/nonexistent/path.jsonl")
+    assert result == ""

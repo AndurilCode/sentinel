@@ -264,6 +264,80 @@ def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]
     return lines
 
 
+def read_compacted_transcript(transcript_path: str,
+                               budget_chars: int = 4000) -> str:
+    """Read full transcript, compact events, return formatted string.
+
+    If the result exceeds budget_chars, keeps head + tail with a truncation marker.
+    """
+    if not os.path.exists(transcript_path):
+        return ""
+
+    try:
+        from sentinel_context import compact_event
+    except ImportError:
+        return ""
+
+    compacted = []
+    state = {"pending_tools": []}
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                evt = compact_event(entry, state)
+                if evt:
+                    compacted.append(evt)
+    except OSError:
+        return ""
+
+    # Format as one-liner strings
+    lines = []
+    for evt in compacted:
+        trigger = evt.get("trigger", "")
+        text = evt.get("text", "")
+        if trigger == "user":
+            lines.append(f"[human] {text}")
+        elif trigger == "tool_result":
+            lines.append(f"[result] {text}")
+        elif trigger == "stop":
+            lines.append(f"[assistant] {text}")
+        else:
+            lines.append(f"[{trigger}] {text}")
+
+    full_text = "\n".join(lines)
+    if len(full_text) <= budget_chars:
+        return full_text
+
+    # Truncate: keep 40% head + 60% tail
+    head_budget = int(budget_chars * 0.4)
+    tail_budget = budget_chars - head_budget
+    head_lines = []
+    head_len = 0
+    for ln in lines:
+        if head_len + len(ln) + 1 > head_budget:
+            break
+        head_lines.append(ln)
+        head_len += len(ln) + 1
+
+    tail_lines = []
+    tail_len = 0
+    for ln in reversed(lines):
+        if tail_len + len(ln) + 1 > tail_budget:
+            break
+        tail_lines.insert(0, ln)
+        tail_len += len(ln) + 1
+
+    skipped = len(lines) - len(head_lines) - len(tail_lines)
+    marker = f"...[{skipped} events truncated]..."
+    return "\n".join(head_lines + [marker] + tail_lines)
+
+
 # ── Extraction prompts ──────────────────────────────────────────────
 
 HUMAN_EXTRACTION_PROMPT = """You are observing a conversation between a developer and a coding agent.
