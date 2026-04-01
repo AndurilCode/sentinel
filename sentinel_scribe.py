@@ -687,6 +687,112 @@ def parse_synthesis_response(response: str) -> Optional[dict]:
     return None
 
 
+# ── Validation + Synthesis ───────────────────────────────────────────
+
+VALIDATION_SYNTHESIS_PROMPT = """You are validating a convention extracted from a coding session and deciding if it
+should become a new Sentinel rule.
+
+EXTRACTED CONVENTION:
+Statement: {statement}
+Evidence: "{evidence}"
+Source: {source}
+Scope hint: {scope_hint}
+Trigger hint: {trigger_hint}
+
+ACTUAL files in the repository matching this convention:
+{matched_files}
+
+EXISTING ACTIVE RULES in this repository:
+{existing_rules}
+
+TASK:
+1. Is this convention SEMANTICALLY REDUNDANT with any existing rule above?
+   (Same intent, even if worded differently or with different scope.)
+2. If NOT redundant, generate a complete Sentinel rule YAML.
+
+If REDUNDANT, return ONLY this JSON:
+{{"redundant": true, "reason": "explanation of which rule covers this"}}
+
+If NOT redundant, return ONLY valid YAML for a new rule with these fields:
+- id: kebab-case identifier
+- trigger: one of file_write, bash, mcp, or any
+- severity: block or warn
+- scope: list of glob patterns derived from the ACTUAL file paths above
+- exclude: list of glob patterns for exceptions (omit if none)
+- prompt: the evaluation prompt using {{{{template_vars}}}} for the chosen trigger:
+  - file_write trigger: use {{{{file_path}}}}, {{{{content_snippet}}}}
+  - bash trigger: use {{{{command}}}}
+  - mcp trigger: use {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}}
+
+The prompt must end with:
+Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+
+Return ONLY the JSON or YAML, no other text."""
+
+
+def build_validation_prompt(observation: dict, existing_rules: list[dict],
+                             matched_files: list[str]) -> str:
+    """Build the validation + synthesis prompt."""
+    files_text = "\n".join(f"  - {f}" for f in matched_files[:20]) if matched_files else "  (no matching files found)"
+
+    rules_text = ""
+    for r in existing_rules:
+        rules_text += f"\n  - id: {r.get('id', '?')}, trigger: {r.get('trigger', '?')}, scope: {r.get('scope', [])}, prompt: {str(r.get('prompt', ''))[:100]}"
+    if not rules_text:
+        rules_text = "\n  (no existing rules)"
+
+    return VALIDATION_SYNTHESIS_PROMPT.format(
+        statement=observation["statement"],
+        evidence=observation.get("evidence", ""),
+        source=observation.get("source", "unknown"),
+        scope_hint=observation.get("scope_hint", "**"),
+        trigger_hint=observation.get("trigger_hint", "any"),
+        matched_files=files_text,
+        existing_rules=rules_text,
+    )
+
+
+def parse_validation_response(response: str) -> Optional[dict]:
+    """Parse validation LLM response.
+
+    Returns:
+      {"redundant": True, "reason": "..."} if redundant
+      {"redundant": False, "rule": {...}} if a new rule was generated
+      None if unparseable
+    """
+    stripped = response.strip()
+
+    # Try JSON first (redundancy response)
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, dict) and "redundant" in data:
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try after stripping markdown fences
+    cleaned = re.sub(r'^```(?:json|yaml)?\s*\n?', '', stripped)
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+
+    # Try JSON again
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict) and "redundant" in data:
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try YAML (new rule response)
+    try:
+        rule = yaml.safe_load(cleaned)
+        if isinstance(rule, dict) and "prompt" in rule:
+            return {"redundant": False, "rule": rule}
+    except yaml.YAMLError:
+        pass
+
+    return None
+
+
 # ── Observe pipeline ────────────────────────────────────────────────
 
 def _glob_repo_files(scope_hint: str, project_root: str) -> list[str]:

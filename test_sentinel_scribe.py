@@ -779,3 +779,58 @@ def test_build_transcript_extraction_prompt_no_summary():
     )
     assert "fix the bug" in prompt
     assert "PRIORITY GUIDANCE" in prompt
+
+
+def test_build_validation_prompt():
+    import sentinel_scribe
+    observation = {
+        "statement": "Never edit billing directly",
+        "scope_hint": "src/billing",
+        "trigger_hint": "file_write",
+        "evidence": "agent tried to edit billing, got corrected",
+        "source": "user_feedback",
+    }
+    existing_rules = [
+        {"id": "no-eval", "trigger": "file_write", "scope": ["**"], "prompt": "Check for eval usage"}
+    ]
+    matched_files = ["src/billing/invoice.ts", "src/billing/payment.ts"]
+    prompt = sentinel_scribe.build_validation_prompt(
+        observation=observation,
+        existing_rules=existing_rules,
+        matched_files=matched_files,
+    )
+    assert "Never edit billing directly" in prompt
+    assert "no-eval" in prompt
+    assert "src/billing/invoice.ts" in prompt
+    assert "redundant" in prompt.lower()
+
+
+def test_parse_validation_response_redundant():
+    import sentinel_scribe
+    response = '{"redundant": true, "reason": "Already covered by no-billing-edits rule"}'
+    result = sentinel_scribe.parse_validation_response(response)
+    assert result is not None
+    assert result["redundant"] is True
+
+
+def test_parse_validation_response_new_rule():
+    import sentinel_scribe
+    response = """id: no-billing-edits
+trigger: file_write
+severity: block
+scope:
+  - "src/billing/**"
+prompt: |
+  Test {{file_path}}
+"""
+    result = sentinel_scribe.parse_validation_response(response)
+    assert result is not None
+    assert result.get("redundant") is not True
+    assert result["rule"]["id"] == "no-billing-edits"
+    assert result["rule"]["prompt"] is not None
+
+
+def test_parse_validation_response_malformed():
+    import sentinel_scribe
+    result = sentinel_scribe.parse_validation_response("garbage output")
+    assert result is None
