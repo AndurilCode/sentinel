@@ -683,7 +683,6 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
             continue
 
         scope_hint = conv.get("scope_hint", "**")
-        trigger_hint = conv.get("trigger_hint", "unknown")
         rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
         drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
 
@@ -919,7 +918,6 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                     continue
 
                 scope_hint = conv.get("scope_hint", "**")
-                trigger_hint = conv.get("trigger_hint", "unknown")
                 rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
                 drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
 

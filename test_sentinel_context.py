@@ -1,10 +1,9 @@
 import json
 import os
 import tempfile
-from unittest.mock import patch, MagicMock
 from sentinel_context import (
     compact_event, parse_transcript_entries,
-    build_accumulator_prompt, update_summary
+    build_accumulator_prompt
 )
 
 
