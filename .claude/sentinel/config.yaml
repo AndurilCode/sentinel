@@ -65,3 +65,14 @@ context:
   min_events: 3
   lock_timeout_s: 30
   summary_max_words: 150
+
+# Scribe — convention learning from user prompts and documentation.
+# Per-step model overrides let you use a fast model for extraction
+# (binary classify + JSON) and a heavier model for synthesis (rule writing).
+#
+# Resolution order: scribe.<step>_model → scribe.model → top-level model
+scribe:
+  enabled: true
+  # model: "gemma3:4b"             # default for all scribe steps
+  # extraction_model: "gemma3:4b"  # override for extraction (observe + learn)
+  # synthesis_model: "gemma3:12b"  # override for synthesis (rule drafting)
