@@ -105,6 +105,38 @@ def _detect_contested(evals):
     return contested_by_rule, contested_targets
 
 
+def compute_pipeline_stats(entries):
+    """Aggregate scribe and context pipeline entries by action."""
+    pipeline_entries = [e for e in entries
+                        if e.get("level") in ("scribe", "context")]
+    if not pipeline_entries:
+        return {}
+
+    actions = defaultdict(lambda: {"count": 0, "errors": 0, "total_ms": 0,
+                                   "max_ms": 0})
+    for e in pipeline_entries:
+        action = e.get("action", "unknown")
+        a = actions[action]
+        a["count"] += 1
+        ms = e.get("elapsed_ms", 0)
+        a["total_ms"] += ms
+        a["max_ms"] = max(a["max_ms"], ms)
+        if e.get("error"):
+            a["errors"] += 1
+
+    result = {}
+    for action, a in actions.items():
+        result[action] = {
+            "count": a["count"],
+            "errors": a["errors"],
+            "avg_ms": int(a["total_ms"] / a["count"]) if a["count"] else 0,
+            "max_ms": a["max_ms"],
+            "success_rate": round((a["count"] - a["errors"]) / a["count"], 2)
+                           if a["count"] else 0.0,
+        }
+    return result
+
+
 def _compute_percentiles(ms_list):
     """Compute min/max/median/p95/mean from a sorted list of ms values."""
     if not ms_list:

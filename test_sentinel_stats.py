@@ -168,3 +168,55 @@ def test_near_miss_max_examples():
         assert len(nm["by_rule"]["r1"]["example_targets"]) == 3
     finally:
         os.unlink(path)
+
+
+def test_pipeline_stats():
+    entries = [
+        {"level": "scribe", "ts": "2026-04-01T10:00:00Z",
+         "action": "reflect_extraction", "model": "llama3.2:3b",
+         "elapsed_ms": 1200},
+        {"level": "scribe", "ts": "2026-04-01T10:01:00Z",
+         "action": "reflect_extraction", "model": "llama3.2:3b",
+         "elapsed_ms": 1400, "error": "parse failure"},
+        {"level": "scribe", "ts": "2026-04-01T10:02:00Z",
+         "action": "reflect_validation", "model": "llama3.2:3b",
+         "elapsed_ms": 800},
+        {"level": "context", "ts": "2026-04-01T10:03:00Z",
+         "action": "accumulate", "model": "llama3.2:3b",
+         "elapsed_ms": 350},
+        {"level": "context", "ts": "2026-04-01T10:04:00Z",
+         "action": "accumulate", "model": "llama3.2:3b",
+         "elapsed_ms": 400, "error": "timeout"},
+    ]
+    path = _write_log(entries)
+    try:
+        all_entries = sentinel_stats.load_entries(path)
+        pipeline = sentinel_stats.compute_pipeline_stats(all_entries)
+        assert pipeline["reflect_extraction"]["count"] == 2
+        assert pipeline["reflect_extraction"]["errors"] == 1
+        assert pipeline["reflect_extraction"]["success_rate"] == 0.5
+        assert pipeline["reflect_extraction"]["max_ms"] == 1400
+        assert pipeline["reflect_validation"]["count"] == 1
+        assert pipeline["reflect_validation"]["errors"] == 0
+        assert pipeline["reflect_validation"]["success_rate"] == 1.0
+        assert pipeline["accumulate"]["count"] == 2
+        assert pipeline["accumulate"]["errors"] == 1
+    finally:
+        os.unlink(path)
+
+
+def test_pipeline_stats_empty():
+    entries = [
+        {"level": "eval", "ts": "2026-04-01T10:00:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "a.py", "violation": False, "blocked": False,
+         "confidence": 0.5, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"},
+    ]
+    path = _write_log(entries)
+    try:
+        all_entries = sentinel_stats.load_entries(path)
+        pipeline = sentinel_stats.compute_pipeline_stats(all_entries)
+        assert pipeline == {}
+    finally:
+        os.unlink(path)
