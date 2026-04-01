@@ -218,6 +218,29 @@ def compute_dismissal_stats(dis_path):
     }
 
 
+def attach_scribe_stats(stats, entries, scribe_dir):
+    """Populate the scribe section of stats from pipeline entries and scribe files."""
+    pipeline = compute_pipeline_stats(entries)
+
+    obs_stats = None
+    dis_stats = None
+    if scribe_dir:
+        obs_path = os.path.join(scribe_dir, "observations.jsonl")
+        dis_path = os.path.join(scribe_dir, "dismissed.jsonl")
+        obs_stats = compute_observation_stats(obs_path)
+        dis_stats = compute_dismissal_stats(dis_path)
+
+    if not pipeline and obs_stats is None and dis_stats is None:
+        stats["scribe"] = None
+        return
+
+    stats["scribe"] = {
+        "pipeline": pipeline,
+        "observations": obs_stats,
+        "dismissals": dis_stats,
+    }
+
+
 def _compute_percentiles(ms_list):
     """Compute min/max/median/p95/mean from a sorted list of ms values."""
     if not ms_list:

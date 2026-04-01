@@ -280,3 +280,60 @@ def test_observation_stats_missing_file():
 def test_dismissal_stats_missing_file():
     stats = sentinel_stats.compute_dismissal_stats("/nonexistent/path.jsonl")
     assert stats is None
+
+
+def test_compute_all_stats_with_scribe(tmp_path):
+    """Full integration: log entries + scribe files produce complete stats."""
+    log_entries = [
+        {"level": "eval", "ts": "2026-04-01T10:00:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "a.py", "violation": False, "blocked": False,
+         "confidence": 0.5, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"},
+        {"level": "scribe", "ts": "2026-04-01T10:01:00Z",
+         "action": "reflect_extraction", "model": "llama3.2:3b",
+         "elapsed_ms": 1200},
+    ]
+    log_path = str(tmp_path / "sentinel.jsonl")
+    with open(log_path, "w") as f:
+        for e in log_entries:
+            f.write(json.dumps(e) + "\n")
+
+    scribe_dir = str(tmp_path / "scribe")
+    os.makedirs(scribe_dir)
+    obs_path = os.path.join(scribe_dir, "observations.jsonl")
+    with open(obs_path, "w") as f:
+        f.write(json.dumps({
+            "ts": "2026-04-01T10:00:00Z", "source": "user_feedback",
+            "session_id": "s1", "statement": "test",
+            "scope_hint": "**", "trigger_hint": "file_write",
+            "confidence": 0.8, "evidence": "...", "drafted": True,
+        }) + "\n")
+
+    entries = sentinel_stats.load_entries(log_path)
+    stats = sentinel_stats.compute_stats(entries)
+    sentinel_stats.attach_scribe_stats(stats, entries, scribe_dir)
+
+    assert stats["scribe"] is not None
+    assert stats["scribe"]["pipeline"]["reflect_extraction"]["count"] == 1
+    assert stats["scribe"]["observations"]["total"] == 1
+    assert stats["scribe"]["dismissals"] is None
+
+
+def test_compute_all_stats_no_scribe():
+    """Without scribe files, scribe section stays None."""
+    entries = [
+        {"level": "eval", "ts": "2026-04-01T10:00:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "a.py", "violation": False, "blocked": False,
+         "confidence": 0.5, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"},
+    ]
+    path = _write_log(entries)
+    try:
+        all_entries = sentinel_stats.load_entries(path)
+        stats = sentinel_stats.compute_stats(all_entries)
+        sentinel_stats.attach_scribe_stats(stats, all_entries, None)
+        assert stats["scribe"] is None
+    finally:
+        os.unlink(path)
