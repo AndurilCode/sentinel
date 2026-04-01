@@ -220,3 +220,63 @@ def test_pipeline_stats_empty():
         assert pipeline == {}
     finally:
         os.unlink(path)
+
+
+def test_observation_stats(tmp_path):
+    obs_path = tmp_path / "observations.jsonl"
+    observations = [
+        {"ts": "2026-04-01T10:00:00Z", "source": "user_feedback",
+         "session_id": "s1", "statement": "use snake_case",
+         "scope_hint": "**", "trigger_hint": "file_write",
+         "confidence": 0.8, "evidence": "...", "drafted": True},
+        {"ts": "2026-04-01T10:01:00Z", "source": "user_feedback",
+         "session_id": "s1", "statement": "no print statements",
+         "scope_hint": "**", "trigger_hint": "file_write",
+         "confidence": 0.6, "evidence": "...", "drafted": False},
+        {"ts": "2026-04-01T10:02:00Z", "source": "agent_self_correction",
+         "session_id": "s2", "statement": "prefer pathlib",
+         "scope_hint": "**", "trigger_hint": "file_write",
+         "confidence": 0.9, "evidence": "...", "drafted": True},
+    ]
+    with open(obs_path, "w") as f:
+        for obs in observations:
+            f.write(json.dumps(obs) + "\n")
+
+    stats = sentinel_stats.compute_observation_stats(str(obs_path))
+    assert stats["total"] == 3
+    assert stats["by_source"]["user_feedback"] == 2
+    assert stats["by_source"]["agent_self_correction"] == 1
+    assert stats["draft_rate"] == round(2 / 3, 2)
+    assert stats["by_session"]["s1"] == 2
+    assert stats["by_session"]["s2"] == 1
+
+
+def test_dismissal_stats(tmp_path):
+    dis_path = tmp_path / "dismissed.jsonl"
+    dismissals = [
+        {"scope": "**", "trigger": "file_write",
+         "statement_hash": "abc123", "dismissed_at": "2026-04-01T10:00:00Z"},
+        {"scope": "src/**", "trigger": "file_write",
+         "statement_hash": "abc123", "dismissed_at": "2026-04-01T10:01:00Z"},
+        {"scope": "**", "trigger": "bash",
+         "statement_hash": "def456", "dismissed_at": "2026-04-01T10:02:00Z"},
+    ]
+    with open(dis_path, "w") as f:
+        for d in dismissals:
+            f.write(json.dumps(d) + "\n")
+
+    stats = sentinel_stats.compute_dismissal_stats(str(dis_path))
+    assert stats["total"] == 3
+    assert len(stats["top_patterns"]) == 2
+    assert stats["top_patterns"][0]["count"] == 2
+    assert stats["top_patterns"][0]["key"] == "abc123"
+
+
+def test_observation_stats_missing_file():
+    stats = sentinel_stats.compute_observation_stats("/nonexistent/path.jsonl")
+    assert stats is None
+
+
+def test_dismissal_stats_missing_file():
+    stats = sentinel_stats.compute_dismissal_stats("/nonexistent/path.jsonl")
+    assert stats is None

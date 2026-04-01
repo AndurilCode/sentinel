@@ -137,6 +137,87 @@ def compute_pipeline_stats(entries):
     return result
 
 
+def _find_scribe_dir():
+    """Resolve .sentinel/scribe/ directory, walking up from cwd."""
+    cwd = os.getcwd()
+    while True:
+        scribe_dir = os.path.join(cwd, ".sentinel", "scribe")
+        if os.path.isdir(scribe_dir):
+            return scribe_dir
+        parent = os.path.dirname(cwd)
+        if parent == cwd:
+            break
+        cwd = parent
+    return None
+
+
+def compute_observation_stats(obs_path):
+    """Compute stats from observations.jsonl."""
+    if not os.path.exists(obs_path):
+        return None
+
+    observations = []
+    with open(obs_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                observations.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not observations:
+        return None
+
+    by_source = defaultdict(int)
+    by_session = defaultdict(int)
+    drafted_count = 0
+    for obs in observations:
+        by_source[obs.get("source", "unknown")] += 1
+        by_session[obs.get("session_id", "unknown")] += 1
+        if obs.get("drafted"):
+            drafted_count += 1
+
+    return {
+        "total": len(observations),
+        "by_source": dict(by_source),
+        "draft_rate": round(drafted_count / len(observations), 2),
+        "by_session": dict(by_session),
+    }
+
+
+def compute_dismissal_stats(dis_path):
+    """Compute stats from dismissed.jsonl."""
+    if not os.path.exists(dis_path):
+        return None
+
+    dismissals = []
+    with open(dis_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                dismissals.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not dismissals:
+        return None
+
+    by_hash = defaultdict(int)
+    for d in dismissals:
+        by_hash[d.get("statement_hash", "unknown")] += 1
+
+    top = sorted(by_hash.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    return {
+        "total": len(dismissals),
+        "top_patterns": [{"key": k, "count": c} for k, c in top],
+    }
+
+
 def _compute_percentiles(ms_list):
     """Compute min/max/median/p95/mean from a sorted list of ms values."""
     if not ms_list:
