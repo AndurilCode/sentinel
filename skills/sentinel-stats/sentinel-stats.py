@@ -413,33 +413,32 @@ def fmt_bar(count, total, width=20):
 
 
 def print_report(stats):
-    s = stats
-    print("═══════════════════════════════════════════════════════")
+    ev = stats["evaluation"]
+    perf = stats["performance"]
+    scribe = stats["scribe"]
+    health = stats["health"]
+
+    print("\u2550" * 55)
     print("  SENTINEL STATS")
-    print("═══════════════════════════════════════════════════════")
+    print("\u2550" * 55)
+
+    # ── EVALUATION ──────────────────────────────────────────
+    print()
+    print("  EVALUATION")
+    print("\u2500" * 55)
     print()
 
     # Overview
-    print(f"  Evaluations:  {s['total_evals']}")
-    print(f"  Violations:   {s['total_violations']}")
-    print(f"  Blocked:      {s['total_blocks']}")
-    print(f"  Skipped:      {s['total_skipped']}")
-    print(f"  Timeouts:     {s['total_timeouts']}")
+    print(f"  Evaluations:  {ev['total_evals']}")
+    print(f"  Violations:   {ev['total_violations']}")
+    print(f"  Blocked:      {ev['total_blocks']}")
+    print(f"  Skipped:      {ev['total_skipped']}")
+    print(f"  Timeouts:     {ev['total_timeouts']}")
+
+    # Per-Rule
     print()
-
-    # Latency
-    lat = s["latency"]
-    if lat["max_ms"]:
-        print("  Latency (ms)")
-        print(f"    min: {lat['min_ms']}  median: {lat['median_ms']}  "
-              f"p95: {lat['p95_ms']}  max: {lat['max_ms']}  mean: {lat['mean_ms']}")
-        print()
-
-    # Per-rule breakdown
-    print("───────────────────────────────────────────────────────")
-    print("  RULES")
-    print("───────────────────────────────────────────────────────")
-    for rid, r in sorted(stats["rules"].items(),
+    print("  Rules")
+    for rid, r in sorted(ev["rules"].items(),
                          key=lambda x: x[1]["violations"], reverse=True):
         viol_rate = r["violations"] / r["evals"] * 100 if r["evals"] else 0
         avg_ms = int(r["total_ms"] / r["evals"]) if r["evals"] else 0
@@ -458,25 +457,105 @@ def print_report(stats):
         print(f"    {fmt_bar(r['violations'], r['evals'])} "
               f"{r['violations']}/{r['evals']} violations")
 
-    # Hottest targets
+    # Trigger Breakdown
+    if ev["triggers"]:
+        print()
+        print("  Trigger Breakdown")
+        for trig, t in sorted(ev["triggers"].items(),
+                              key=lambda x: x[1]["evals"], reverse=True):
+            print(f"    {trig:<14} {t['evals']:>4} evals  "
+                  f"{t['violations']:>3} violations  "
+                  f"{t['blocks']:>3} blocked")
+
+    # Tool Breakdown
+    if ev["tools"]:
+        print()
+        print("  Tool Breakdown")
+        sorted_tools = sorted(ev["tools"].items(),
+                              key=lambda x: x[1]["evals"], reverse=True)[:10]
+        for tool, t in sorted_tools:
+            print(f"    {tool:<14} {t['evals']:>4} evals  "
+                  f"{t['violations']:>3} violations  "
+                  f"{t['blocks']:>3} blocked")
+
+    # Hottest Targets
     print()
-    print("───────────────────────────────────────────────────────")
-    print("  HOTTEST TARGETS")
-    print("───────────────────────────────────────────────────────")
-    sorted_targets = sorted(stats["targets"].items(),
+    print("  Hottest Targets")
+    sorted_targets = sorted(ev["targets"].items(),
                             key=lambda x: x[1]["evals"], reverse=True)[:10]
     for target, t in sorted_targets:
-        print(f"  {t['evals']:>4} evals  {t['violations']:>3} violations  "
+        print(f"    {t['evals']:>4} evals  {t['violations']:>3} violations  "
               f"{t['blocks']:>3} blocked  {target}")
 
-    # Rule health — flag noisy rules and suggest fixes
+    # ── PERFORMANCE ─────────────────────────────────────────
     print()
-    print("───────────────────────────────────────────────────────")
-    print("  RULE HEALTH")
-    print("───────────────────────────────────────────────────────")
+    print("  PERFORMANCE")
+    print("\u2500" * 55)
 
+    lat = perf["latency"]
+    if lat["max_ms"]:
+        print()
+        print("  Latency Overview (ms)")
+        print(f"    min: {lat['min_ms']}  median: {lat['median_ms']}  "
+              f"p95: {lat['p95_ms']}  max: {lat['max_ms']}  "
+              f"mean: {lat['mean_ms']}")
+
+    if perf["models"]:
+        print()
+        print("  Per-Model Latency")
+        for model, m in sorted(perf["models"].items(),
+                               key=lambda x: x[1]["evals"], reverse=True):
+            print(f"    {model:<18} {m['evals']:>4} evals  "
+                  f"avg {m['mean_ms']}ms  median {m['median_ms']}ms  "
+                  f"p95 {m['p95_ms']}ms  max {m['max_ms']}ms")
+
+    # ── SCRIBE & CONTEXT ────────────────────────────────────
+    if scribe:
+        print()
+        print("  SCRIBE & CONTEXT")
+        print("\u2500" * 55)
+
+        if scribe["pipeline"]:
+            print()
+            print("  Pipeline Stats")
+            for action, p in sorted(scribe["pipeline"].items()):
+                print(f"    {action:<24} {p['count']:>3} runs  "
+                      f"avg {p['avg_ms']}ms  "
+                      f"{p['errors']} errors  "
+                      f"{p['success_rate']:.0%} success")
+
+        if scribe.get("observations"):
+            obs = scribe["observations"]
+            print()
+            print("  Observations")
+            print(f"    Total observations: {obs['total']}")
+            sources = "  ".join(f"{k}: {v}" for k, v
+                                in sorted(obs["by_source"].items(),
+                                          key=lambda x: x[1], reverse=True))
+            print(f"    By source:  {sources}")
+            drafted = int(obs["draft_rate"] * obs["total"])
+            print(f"    Draft rate: {obs['draft_rate']:.0%} "
+                  f"({drafted}/{obs['total']} drafted)")
+            print(f"    Sessions:   {len(obs['by_session'])}")
+
+        if scribe.get("dismissals"):
+            dis = scribe["dismissals"]
+            print()
+            print("  Dismissals")
+            print(f"    Total dismissed: {dis['total']}")
+            if dis["top_patterns"]:
+                print("    Top dismissed:")
+                for p in dis["top_patterns"]:
+                    print(f"      {p['count']}x  {p['key']}")
+
+    # ── HEALTH ──────────────────────────────────────────────
+    print()
+    print("  HEALTH")
+    print("\u2500" * 55)
+
+    # Rule Health (existing logic)
     issues = []
-    for rid, r in sorted(stats["rules"].items()):
+    for rid, r in sorted(ev["rules"].items()):
         if r["blocks"] == 0:
             continue
         override_rate = r["contested"] / r["blocks"] if r["blocks"] else 0
@@ -489,19 +568,19 @@ def print_report(stats):
 
     if not issues:
         print()
-        print("  All rules healthy. No action needed.")
+        print("  Rule Health: all rules healthy.")
     else:
+        print()
+        print("  Rule Health")
         for kind, rid, r, rate in issues:
             print()
             if kind == "noisy":
-                print(f"  !! {rid}  — likely false positives")
+                print(f"  !! {rid}  \u2014 likely false positives")
                 print(f"     {r['contested']}/{r['blocks']} blocks contested "
                       f"(override rate: {rate:.0%})")
-                # Find the most-contested targets for this rule
                 rule_targets = {
-                    t: c for (rule_id, t), c
-                    in stats.get("contested_targets", {}).items()
-                    if rule_id == rid
+                    t: c for key, c in health["contested_targets"].items()
+                    for t in [key.split(":", 1)[1]] if key.startswith(rid + ":")
                 }
                 if rule_targets:
                     top = sorted(rule_targets.items(),
@@ -512,14 +591,30 @@ def print_report(stats):
                     print("     Suggested fix: add these to the rule's "
                           "exclude list, or switch to severity: warn")
             elif kind == "flaky":
-                print(f"  ?? {rid}  — unreliable "
+                print(f"  ?? {rid}  \u2014 unreliable "
                       f"({r['skipped']} skipped / {r['evals']} evals)")
                 print("     Suggested fix: check Ollama stability or "
                       "increase timeout_ms for this rule")
             elif kind == "slow":
-                print(f"  ~~ {rid}  — slow (max {r['max_ms']}ms)")
+                print(f"  ~~ {rid}  \u2014 slow (max {r['max_ms']}ms)")
                 print("     Suggested fix: use a smaller model or "
                       "narrow the scope to reduce evaluations")
+
+    # Near-Miss Analysis
+    nm = health["near_misses"]
+    if nm["total"] > 0:
+        print()
+        print(f"  Near Misses ({nm['total']} total "
+              "\u2014 confidence within 0.1 of threshold)")
+        for rid, data in sorted(nm["by_rule"].items(),
+                                key=lambda x: x[1]["count"], reverse=True):
+            sev = ev["rules"].get(rid, {}).get("severity", "?")
+            targets_str = ", ".join(data["example_targets"])
+            if data["count"] > len(data["example_targets"]):
+                targets_str += ", ..."
+            print(f"    {rid}  [{sev}]  {data['count']} near misses"
+                  f"  (targets: {targets_str})")
+
     print()
 
 
