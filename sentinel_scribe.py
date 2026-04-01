@@ -977,6 +977,144 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
             write_draft(drafts_dir, rule, draft_meta)
 
 
+# ── Reflect pipeline ─────────────────────────────────────────────────
+
+def reflect(transcript_path: str, session_id: str,
+            config: dict, config_dir: str, scribe_dir: str,
+            session_dir: str) -> None:
+    """Full --reflect pipeline: analyze transcript for conventions, validate, draft."""
+    from sentinel_lock import acquire_lock, release_lock, LockPriority
+
+    scribe_cfg = config.get("scribe", SCRIBE_DEFAULTS)
+    extraction_model = _resolve_model(scribe_cfg, config, "extraction")
+    synthesis_model = _resolve_model(scribe_cfg, config, "synthesis")
+    guidance = scribe_cfg.get("guidance")
+    thresholds = scribe_cfg.get("thresholds", {})
+    extraction_confidence = thresholds.get("extraction_confidence", 0.7)
+
+    # 1. Read and compact transcript
+    budget = scribe_cfg.get("transcript_budget_chars", 4000)
+    transcript_text = read_compacted_transcript(transcript_path, budget_chars=budget)
+    if not transcript_text.strip():
+        log_ollama(config, "scribe", "reflect", extraction_model, 0,
+                   response="empty_transcript")
+        return
+
+    # 2. Load session summary (optional context)
+    summary = None
+    summary_path = os.path.join(session_dir, "summary.json")
+    try:
+        with open(summary_path) as f:
+            summary = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # 3. Phase 1: Extraction
+    lock_path = os.path.join(session_dir, "ollama.lock")
+    os.makedirs(session_dir, exist_ok=True)
+    fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+    if fd is None:
+        log_ollama(config, "scribe", "reflect_extraction", extraction_model, 0,
+                   error="lock_timeout")
+        return
+
+    t0 = time.time()
+    try:
+        prompt = build_transcript_extraction_prompt(transcript_text, summary, guidance)
+        response = call_ollama(prompt, extraction_model, config, think=False)
+    except Exception as exc:
+        log_ollama(config, "scribe", "reflect_extraction", extraction_model,
+                   (time.time() - t0) * 1000, error=str(exc))
+        return
+    finally:
+        release_lock(fd)
+    log_ollama(config, "scribe", "reflect_extraction", extraction_model,
+               (time.time() - t0) * 1000, response=response)
+
+    conventions = parse_extraction_response(response)
+    if not conventions:
+        return
+
+    # 4. Phase 2: Validate each convention
+    rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
+    drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
+    project_root = os.path.dirname(os.path.dirname(config_dir))
+    active_rules = load_active_rules(rules_dir)
+
+    for conv in conventions:
+        confidence = conv.get("confidence", 0.0)
+        if confidence < extraction_confidence:
+            continue
+
+        source = conv.get("source", "unknown")
+        observation = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "source": source,
+            "session_id": session_id,
+            "statement": conv.get("statement", ""),
+            "scope_hint": conv.get("scope_hint", "**"),
+            "trigger_hint": conv.get("trigger_hint", "unknown"),
+            "confidence": confidence,
+            "evidence": conv.get("evidence", ""),
+            "drafted": False,
+        }
+        append_observation(scribe_dir, observation)
+
+        # Phase 2A: Structural dedup
+        if is_dismissed(scribe_dir, conv.get("scope_hint", "**"),
+                        conv.get("trigger_hint", "unknown")):
+            continue
+
+        # Phase 2B: Semantic dedup + synthesis (LLM judge)
+        scope_hint = conv.get("scope_hint", "**")
+        matched_files = _glob_repo_files(scope_hint, project_root)
+
+        fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+        if fd2 is None:
+            log_ollama(config, "scribe", "reflect_validation", synthesis_model, 0,
+                       error="lock_timeout")
+            continue
+
+        t1 = time.time()
+        try:
+            val_prompt = build_validation_prompt(conv, active_rules, matched_files)
+            val_response = call_ollama(
+                val_prompt, synthesis_model, config, json_format=False,
+                think=scribe_cfg.get("think", False),
+                timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
+        except Exception as exc:
+            log_ollama(config, "scribe", "reflect_validation", synthesis_model,
+                       (time.time() - t1) * 1000, error=str(exc))
+            continue
+        finally:
+            release_lock(fd2)
+        log_ollama(config, "scribe", "reflect_validation", synthesis_model,
+                   (time.time() - t1) * 1000, response=val_response)
+
+        result = parse_validation_response(val_response)
+        if result is None:
+            continue
+        if result.get("redundant"):
+            log_ollama(config, "scribe", "reflect_validation", synthesis_model, 0,
+                       response=f"redundant: {result.get('reason', '')}")
+            continue
+
+        rule = result.get("rule", {})
+        if rule and rule.get("prompt"):
+            rule.setdefault("id", re.sub(r'[^a-z0-9-]', '-',
+                            conv["statement"][:40].lower().strip()).strip("-"))
+            draft_meta = {
+                "source": source,
+                "observed": 1,
+                "first_seen": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "evidence": [conv.get("evidence", "")],
+                "confidence": confidence,
+                "synthesized": datetime.now(timezone.utc).isoformat(),
+                "model": synthesis_model,
+            }
+            write_draft(drafts_dir, rule, draft_meta)
+
+
 # ── Draft notification ──────────────────────────────────────────────
 
 def check_pending_drafts(drafts_dir: str, session_dir: str,

@@ -834,3 +834,177 @@ def test_parse_validation_response_malformed():
     import sentinel_scribe
     result = sentinel_scribe.parse_validation_response("garbage output")
     assert result is None
+
+
+def test_reflect_pipeline_extracts_and_drafts(tmp_path, config_dir):
+    """Full --reflect pipeline: extract from transcript, validate, write draft."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "Add a login page"}, "timestamp": "T1"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "npm test"}}
+        ]}, "timestamp": "T2"},
+        {"type": "user", "message": {"role": "user", "content": json.dumps([
+            {"tool_use_id": "tu_1", "type": "tool_result", "is_error": True, "content": "Error: eval is not allowed"}
+        ])}, "timestamp": "T3"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "I see, eval is forbidden. Let me fix this."}
+        ]}, "timestamp": "T4"},
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+    os.makedirs(session_dir, exist_ok=True)
+
+    extraction_response = json.dumps({"conventions": [{
+        "statement": "Never use eval() in this codebase",
+        "scope_hint": "**",
+        "trigger_hint": "file_write",
+        "confidence": 0.9,
+        "evidence": "eval is not allowed",
+        "source": "agent_self_correction",
+    }]})
+
+    validation_response = """id: no-eval-usage
+trigger: file_write
+severity: block
+scope:
+  - "**"
+prompt: |
+  Check if this file uses eval(). File: {{file_path}}
+  Content: {{content_snippet}}
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
+"""
+
+    call_count = {"n": 0}
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return extraction_response
+        return validation_response
+
+    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                sentinel_scribe.reflect(
+                    transcript_path=str(transcript),
+                    session_id="test-session",
+                    config=config,
+                    config_dir=config_dir,
+                    scribe_dir=scribe_dir,
+                    session_dir=session_dir,
+                )
+
+    # Should have stored observation
+    obs_path = os.path.join(scribe_dir, "observations.jsonl")
+    assert os.path.exists(obs_path)
+    with open(obs_path) as f:
+        obs = json.loads(f.readline())
+    assert obs["statement"] == "Never use eval() in this codebase"
+    assert obs["source"] == "agent_self_correction"
+
+    # Should have written draft
+    drafts_dir = os.path.join(config_dir, "drafts")
+    draft_files = [f for f in os.listdir(drafts_dir) if f.endswith(".draft.yaml")]
+    assert len(draft_files) == 1
+    with open(os.path.join(drafts_dir, draft_files[0])) as f:
+        draft = yaml.safe_load(f)
+    assert draft["_draft"]["source"] == "agent_self_correction"
+
+
+def test_reflect_skips_redundant_conventions(tmp_path, config_dir):
+    """Should not write draft if validation says redundant."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "never use eval"}, "timestamp": "T1"},
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    # Create an existing rule
+    rules_dir = os.path.join(config_dir, "rules")
+    with open(os.path.join(rules_dir, "no-eval.yaml"), "w") as f:
+        yaml.dump({"id": "no-eval", "trigger": "file_write", "scope": ["**"], "prompt": "no eval"}, f)
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+    os.makedirs(session_dir, exist_ok=True)
+
+    extraction_response = json.dumps({"conventions": [{
+        "statement": "Do not use eval",
+        "scope_hint": "**",
+        "trigger_hint": "file_write",
+        "confidence": 0.9,
+        "evidence": "never use eval",
+        "source": "user_feedback",
+    }]})
+    validation_response = '{"redundant": true, "reason": "Covered by existing no-eval rule"}'
+
+    call_count = {"n": 0}
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return extraction_response
+        return validation_response
+
+    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                sentinel_scribe.reflect(
+                    transcript_path=str(transcript),
+                    session_id="test-session",
+                    config=config,
+                    config_dir=config_dir,
+                    scribe_dir=scribe_dir,
+                    session_dir=session_dir,
+                )
+
+    # Should have stored observation but NOT written draft
+    obs_path = os.path.join(scribe_dir, "observations.jsonl")
+    assert os.path.exists(obs_path)
+    drafts_dir = os.path.join(config_dir, "drafts")
+    draft_files = [f for f in os.listdir(drafts_dir) if f.endswith(".draft.yaml")]
+    assert len(draft_files) == 0
+
+
+def test_reflect_no_conventions(tmp_path, config_dir):
+    """Should do nothing when no conventions extracted."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "add a login page"}, "timestamp": "T1"},
+    ]
+    with open(transcript, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+    os.makedirs(session_dir, exist_ok=True)
+
+    with patch.object(sentinel_scribe, "call_ollama", return_value='{"conventions": []}'):
+        with patch("sentinel_lock.acquire_lock", return_value=99):
+            with patch("sentinel_lock.release_lock"):
+                sentinel_scribe.reflect(
+                    transcript_path=str(transcript),
+                    session_id="test-session",
+                    config=config,
+                    config_dir=config_dir,
+                    scribe_dir=scribe_dir,
+                    session_dir=session_dir,
+                )
+
+    obs_path = os.path.join(scribe_dir, "observations.jsonl")
+    assert not os.path.exists(obs_path)
