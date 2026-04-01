@@ -32,9 +32,15 @@ prompt: |
   FILE: {{file_path}}
   RESULT: {{tool_output}}
 
-  If this looks like a releasable change (new feature, bug fix, or
-  schema change), write an ACTION REQUIRED instruction telling the
-  agent to bump the version BEFORE making any further edits. State
-  whether it is a PATCH, MINOR, or MAJOR bump and why.
+  A releasable change includes: new features, bug fixes, config
+  corrections (e.g. fixing wrong timeout values, changing defaults),
+  schema changes, or any behavioral difference a user would notice
+  after updating. Changes to hooks.json ARE releasable — they ship
+  with the plugin and affect runtime behavior.
+
+  If this looks like a releasable change, write an ACTION REQUIRED
+  instruction telling the agent to bump the version BEFORE making
+  any further edits. State whether it is a PATCH, MINOR, or MAJOR
+  bump and why.
   Format: write as a direct imperative — not a suggestion or reminder.
   Respond with JSON: {"context": "your instruction (max 80 words)"}

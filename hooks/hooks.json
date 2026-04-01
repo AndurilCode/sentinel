@@ -40,13 +40,13 @@
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel_context.py",
             "async": true,
-            "timeout": 60
+            "timeout": 60000
           },
           {
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel_scribe.py --flush",
             "async": true,
-            "timeout": 30
+            "timeout": 30000
           }
         ]
       }
