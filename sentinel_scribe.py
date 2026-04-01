@@ -654,6 +654,8 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
 
     conventions = parse_extraction_response(response)
     if not conventions:
+        log_ollama(config, "scribe", "extraction", model,
+                   (time.time() - t0) * 1000, response="no_conventions")
         return
 
     # 4. Process each extracted convention
@@ -780,11 +782,17 @@ def check_pending_drafts(drafts_dir: str, session_dir: str,
 def flush(config: dict, config_dir: str, scribe_dir: str,
           session_dir: str, session_id: str) -> None:
     """Process deferred observations from lock timeouts."""
+    model = config.get("scribe", {}).get("model") or config.get("model", "gemma3:4b")
     deferred_dir = os.path.join(scribe_dir, "deferred")
     if not os.path.isdir(deferred_dir):
+        log_ollama(config, "scribe", "flush", model, 0,
+                   response="no deferred dir")
         return
 
-    files = sorted(os.listdir(deferred_dir))
+    files = sorted(f for f in os.listdir(deferred_dir) if f.endswith(".json"))
+    log_ollama(config, "scribe", "flush", model, 0,
+               response=f"found {len(files)} deferred")
+
     for fname in files:
         if not fname.endswith(".json"):
             continue
@@ -972,18 +980,26 @@ def main():
     project_root = os.path.dirname(os.path.dirname(config_dir))
     scribe_d = _scribe_dir(config_dir)
 
+    model = scribe_cfg.get("model") or config.get("model", "gemma3:4b")
+
     if "--observe" in sys.argv:
         if not scribe_cfg.get("sources", {}).get("user_prompts", True):
+            log_ollama(config, "scribe", "observe", model, 0,
+                       error="source_disabled")
             sys.exit(0)
         try:
             raw_data = json.loads(sys.stdin.read())
         except Exception:
+            log_ollama(config, "scribe", "observe", model, 0,
+                       error="stdin_parse_failed")
             sys.exit(0)
 
         session_id = raw_data.get("session_id", "unknown")
         user_prompt = raw_data.get("user_prompt", "")
         transcript_path = raw_data.get("transcript_path", "")
         if not user_prompt:
+            log_ollama(config, "scribe", "observe", model, 0,
+                       error="empty_prompt")
             sys.exit(0)
 
         session_d = _session_dir(session_id, config_dir)

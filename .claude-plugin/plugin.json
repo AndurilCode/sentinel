@@ -1,6 +1,6 @@
 {
   "name": "sentinel",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Local LLM rule evaluator — gates agent actions against repo-defined rules using Ollama",
   "author": {
     "name": "gpavanello"
