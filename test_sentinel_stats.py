@@ -76,3 +76,95 @@ def test_tool_breakdown():
         assert tools["Bash"]["violations"] == 1
     finally:
         os.unlink(path)
+
+
+def test_per_model_latency():
+    entries = [
+        {"level": "eval", "ts": "2026-04-01T10:00:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "a.py", "violation": False, "blocked": False,
+         "confidence": 0.5, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"},
+        {"level": "eval", "ts": "2026-04-01T10:01:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "b.py", "violation": False, "blocked": False,
+         "confidence": 0.4, "threshold": 0.7, "elapsed_ms": 300,
+         "model": "llama3.2:3b"},
+        {"level": "eval", "ts": "2026-04-01T10:02:00Z", "rule_id": "r2",
+         "severity": "warn", "trigger": "bash", "tool": "Bash",
+         "target": "ls", "violation": False, "blocked": False,
+         "confidence": 0.3, "threshold": 0.7, "elapsed_ms": 500,
+         "model": "qwen2.5:7b"},
+    ]
+    path = _write_log(entries)
+    try:
+        stats = sentinel_stats.compute_stats(sentinel_stats.load_entries(path))
+        models = stats["performance"]["models"]
+        assert "llama3.2:3b" in models
+        assert models["llama3.2:3b"]["evals"] == 2
+        assert models["llama3.2:3b"]["min_ms"] == 100
+        assert models["llama3.2:3b"]["max_ms"] == 300
+        assert "qwen2.5:7b" in models
+        assert models["qwen2.5:7b"]["evals"] == 1
+    finally:
+        os.unlink(path)
+
+
+def test_near_miss_detection():
+    entries = [
+        # Near miss: confidence 0.65, threshold 0.7 (gap = 0.05 < 0.1)
+        {"level": "eval", "ts": "2026-04-01T10:00:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "sensitive.py", "violation": False, "blocked": False,
+         "confidence": 0.65, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"},
+        # Not a near miss: confidence 0.3, threshold 0.7 (gap = 0.4)
+        {"level": "eval", "ts": "2026-04-01T10:01:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "safe.py", "violation": False, "blocked": False,
+         "confidence": 0.3, "threshold": 0.7, "elapsed_ms": 200,
+         "model": "llama3.2:3b"},
+        # Near miss: confidence 0.62, threshold 0.7 (gap = 0.08 < 0.1)
+        {"level": "eval", "ts": "2026-04-01T10:02:00Z", "rule_id": "r2",
+         "severity": "warn", "trigger": "bash", "tool": "Bash",
+         "target": "deploy.sh", "violation": False, "blocked": False,
+         "confidence": 0.62, "threshold": 0.7, "elapsed_ms": 150,
+         "model": "llama3.2:3b"},
+        # Violation — not a near miss even if close
+        {"level": "eval", "ts": "2026-04-01T10:03:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "bad.py", "violation": True, "blocked": True,
+         "confidence": 0.75, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"},
+    ]
+    path = _write_log(entries)
+    try:
+        stats = sentinel_stats.compute_stats(sentinel_stats.load_entries(path))
+        nm = stats["health"]["near_misses"]
+        assert nm["total"] == 2
+        assert nm["by_rule"]["r1"]["count"] == 1
+        assert "sensitive.py" in nm["by_rule"]["r1"]["example_targets"]
+        assert nm["by_rule"]["r2"]["count"] == 1
+    finally:
+        os.unlink(path)
+
+
+def test_near_miss_max_examples():
+    """Near miss example_targets capped at 3 per rule."""
+    entries = [
+        {"level": "eval", "ts": f"2026-04-01T10:0{i}:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": f"file{i}.py", "violation": False, "blocked": False,
+         "confidence": 0.65, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"}
+        for i in range(5)
+    ]
+    path = _write_log(entries)
+    try:
+        stats = sentinel_stats.compute_stats(sentinel_stats.load_entries(path))
+        nm = stats["health"]["near_misses"]
+        assert nm["total"] == 5
+        assert nm["by_rule"]["r1"]["count"] == 5
+        assert len(nm["by_rule"]["r1"]["example_targets"]) == 3
+    finally:
+        os.unlink(path)
