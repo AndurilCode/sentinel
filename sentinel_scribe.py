@@ -420,6 +420,53 @@ def build_doc_extraction_prompt(content: str, source_type: str,
     )
 
 
+TRANSCRIPT_EXTRACTION_PROMPT = """You are observing a completed coding session between a developer and a coding agent.
+Your job: extract any PERMANENT conventions the agent should follow in ALL future sessions.
+
+{summary_block}
+SESSION TRANSCRIPT:
+{transcript_text}
+{guidance_block}
+Look for TWO types of signals:
+
+1. HUMAN-EXPRESSED RULES — the developer states a permanent convention:
+   - "never modify billing directly" — boundary (permanent)
+   - "always run tests before pushing" — process (permanent)
+   - Language: "never", "always", "from now on", "in this repo we...", "the rule is..."
+
+2. AGENT SELF-CORRECTIONS — the agent made a mistake and corrected itself:
+   - Tool error → agent adjusts approach (implies a convention about correct usage)
+   - Write/edit → revise same file (implies the first approach was wrong)
+   - Test failure → code fix (implies a convention about correct implementation)
+   - The correction pattern itself reveals what the convention should be
+
+MOST sessions yield ZERO conventions. Return empty unless very confident.
+
+RETURN EMPTY for:
+- Normal task execution (writing code, reading files, running commands)
+- One-off debugging that doesn't imply a general rule
+- Agent exploring/learning about the codebase
+- Successful first attempts (no correction needed = no convention to learn)
+
+If no conventions: {{"conventions": []}}
+If found: {{"conventions": [{{"statement": "...", "scope_hint": "file glob like src/billing/** or ** for all files", "trigger_hint": "file_write|bash|mcp|unknown", "confidence": 0.0-1.0, "evidence": "exact transcript excerpt showing the signal", "source": "user_feedback|agent_self_correction"}}]}}"""
+
+
+def build_transcript_extraction_prompt(transcript_text: str,
+                                        summary: Optional[dict],
+                                        guidance: Optional[str]) -> str:
+    """Build the transcript-level extraction prompt."""
+    if summary:
+        summary_block = f"SESSION SUMMARY:\n{json.dumps(summary)}\n"
+    else:
+        summary_block = ""
+    return TRANSCRIPT_EXTRACTION_PROMPT.format(
+        summary_block=summary_block,
+        transcript_text=transcript_text,
+        guidance_block=_guidance_block(guidance),
+    )
+
+
 # ── Ollama integration ──────────────────────────────────────────────
 
 def call_ollama(prompt: str, model: str, config: dict,

@@ -752,3 +752,30 @@ def test_read_compacted_transcript_missing_file():
     import sentinel_scribe
     result = sentinel_scribe.read_compacted_transcript("/nonexistent/path.jsonl")
     assert result == ""
+
+
+def test_build_transcript_extraction_prompt():
+    import sentinel_scribe
+    transcript_text = "[human] Add login\n[assistant] [tools: Write(src/login.py)]\n[result] → OK\n[human] never use eval"
+    summary = {"task_scope": "Building auth", "progress": "Started", "current_focus": "Login"}
+    prompt = sentinel_scribe.build_transcript_extraction_prompt(
+        transcript_text=transcript_text,
+        summary=summary,
+        guidance=None,
+    )
+    assert "never use eval" in prompt
+    assert "Building auth" in prompt
+    assert "agent_self_correction" in prompt
+    assert "user_feedback" in prompt
+
+
+def test_build_transcript_extraction_prompt_no_summary():
+    import sentinel_scribe
+    transcript_text = "[human] fix the bug"
+    prompt = sentinel_scribe.build_transcript_extraction_prompt(
+        transcript_text=transcript_text,
+        summary=None,
+        guidance="Focus on security",
+    )
+    assert "fix the bug" in prompt
+    assert "PRIORITY GUIDANCE" in prompt
