@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
+from sentinel_log import log_ollama
 
 try:
     import yaml
@@ -621,6 +622,8 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
     os.makedirs(session_dir, exist_ok=True)
     fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
     if fd is None:
+        log_ollama(config, "scribe", "extraction", model, 0,
+                   error="lock_timeout:deferred")
         deferred_dir = os.path.join(scribe_dir, "deferred")
         os.makedirs(deferred_dir, exist_ok=True)
         deferred = {
@@ -635,14 +638,19 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
             json.dump(deferred, f)
         return
 
+    t0 = time.time()
     try:
         # 3. SLM classify + extract
         prompt = build_human_extraction_prompt(window_lines, guidance)
         response = call_ollama(prompt, model, config, think=False)
-    except Exception:
+    except Exception as exc:
+        log_ollama(config, "scribe", "extraction", model,
+                   (time.time() - t0) * 1000, error=str(exc))
         return
     finally:
         release_lock(fd)
+    log_ollama(config, "scribe", "extraction", model,
+               (time.time() - t0) * 1000, response=response)
 
     conventions = parse_extraction_response(response)
     if not conventions:
@@ -686,16 +694,25 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
         sample_rules = active_rules[:3]
 
         fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+        if fd2 is None:
+            log_ollama(config, "scribe", "synthesis", model, 0,
+                       error="lock_timeout")
+            continue
+        t1 = time.time()
         try:
             synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
             synth_response = call_ollama(
                         synth_prompt, model, config, json_format=False,
                         think=scribe_cfg.get("think", False),
                         timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
-        except Exception:
+        except Exception as exc:
+            log_ollama(config, "scribe", "synthesis", model,
+                       (time.time() - t1) * 1000, error=str(exc))
             continue
         finally:
             release_lock(fd2)
+        log_ollama(config, "scribe", "synthesis", model,
+                   (time.time() - t1) * 1000, response=synth_response)
 
         rule = parse_synthesis_response(synth_response)
         if rule and rule.get("prompt"):
@@ -851,13 +868,22 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
 
         for chunk in chunks:
             fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+            if fd is None:
+                log_ollama(config, "scribe", "learn_extraction", model, 0,
+                           error="lock_timeout")
+                continue
+            t0 = time.time()
             try:
                 prompt = build_doc_extraction_prompt(chunk, source_type, guidance)
                 response = call_ollama(prompt, model, config, think=False)
-            except Exception:
+            except Exception as exc:
+                log_ollama(config, "scribe", "learn_extraction", model,
+                           (time.time() - t0) * 1000, error=str(exc))
                 continue
             finally:
                 release_lock(fd)
+            log_ollama(config, "scribe", "learn_extraction", model,
+                       (time.time() - t0) * 1000, response=response)
 
             conventions = parse_extraction_response(response)
             for conv in conventions:
@@ -892,16 +918,25 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                 sample_rules = active_rules[:3]
 
                 fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+                if fd2 is None:
+                    log_ollama(config, "scribe", "learn_synthesis", model, 0,
+                               error="lock_timeout")
+                    continue
+                t1 = time.time()
                 try:
                     synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
                     synth_response = call_ollama(
                         synth_prompt, model, config, json_format=False,
                         think=scribe_cfg.get("think", False),
                         timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
-                except Exception:
+                except Exception as exc:
+                    log_ollama(config, "scribe", "learn_synthesis", model,
+                               (time.time() - t1) * 1000, error=str(exc))
                     continue
                 finally:
                     release_lock(fd2)
+                log_ollama(config, "scribe", "learn_synthesis", model,
+                           (time.time() - t1) * 1000, response=synth_response)
 
                 rule = parse_synthesis_response(synth_response)
                 if rule and rule.get("prompt"):
