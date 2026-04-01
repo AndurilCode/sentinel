@@ -1,7 +1,6 @@
 id: version-bump-reminder
 trigger: file_write
-severity: info
-post: true
+severity: warn
 scope:
   - "sentinel.py"
   - "sentinel_context.py"
@@ -26,11 +25,8 @@ prompt: |
   causing users to have stale plugin installs with no way to know
   they're outdated.
 
-  SESSION CONTEXT:
-  {{session_context}}
-
   FILE: {{file_path}}
-  RESULT: {{tool_output}}
+  CONTENT (first chars): {{content_snippet}}
 
   A releasable change includes: new features, bug fixes, config
   corrections (e.g. fixing wrong timeout values, changing defaults),
@@ -38,9 +34,8 @@ prompt: |
   after updating. Changes to hooks.json ARE releasable — they ship
   with the plugin and affect runtime behavior.
 
-  If this looks like a releasable change, write an ACTION REQUIRED
-  instruction telling the agent to bump the version BEFORE making
-  any further edits. State whether it is a PATCH, MINOR, or MAJOR
-  bump and why.
-  Format: write as a direct imperative — not a suggestion or reminder.
-  Respond with JSON: {"context": "your instruction (max 80 words)"}
+  Does this write look like a releasable change that requires a
+  version bump in .claude-plugin/plugin.json and marketplace.json?
+  If the file being written IS plugin.json or marketplace.json
+  (i.e. the version bump itself), this is NOT a violation.
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
