@@ -42,6 +42,8 @@ SCRIBE_DEFAULTS = {
     "enabled": True,
     "model": None,
     "guidance": None,
+    "think": False,             # enable /think mode for synthesis (requires Ollama support)
+    "synthesis_timeout_ms": 15000,  # longer timeout for synthesis (generates more tokens)
     "sources": {
         "user_prompts": True,
         "documentation": True,
@@ -195,8 +197,6 @@ def is_dismissed(scribe_dir: str, scope: str, trigger: str) -> bool:
 
 # ── Context window assembly ─────────────────────────────────────────
 
-from sentinel_context import compact_event
-
 
 def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]:
     """Read transcript JSONL and return the last N compacted events as strings.
@@ -206,6 +206,11 @@ def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]
     enough that this is faster than seeking backwards in JSONL.
     """
     if not os.path.exists(transcript_path):
+        return []
+
+    try:
+        from sentinel_context import compact_event
+    except ImportError:
         return []
 
     compacted = []
@@ -325,11 +330,14 @@ def build_doc_extraction_prompt(content: str, source_type: str,
 # ── Ollama integration ──────────────────────────────────────────────
 
 def call_ollama(prompt: str, model: str, config: dict,
-                think: bool = False, json_format: bool = True) -> str:
+                json_format: bool = True, think: bool = False,
+                timeout_ms: Optional[int] = None) -> str:
     """Call Ollama chat endpoint. Returns response content string.
 
     json_format=True forces JSON output (for extraction). Set to False for
     synthesis which returns YAML.
+    think=True enables /think mode (requires Ollama + model support).
+    timeout_ms overrides the default config timeout.
     """
     system_msg = ("You are a JSON-only responder. Always respond with valid JSON, no other text."
                   if json_format else
@@ -341,8 +349,9 @@ def call_ollama(prompt: str, model: str, config: dict,
             {"role": "user", "content": prompt},
         ],
         "stream": False,
+        "think": think,
         "options": {
-            "num_predict": 1000 if not json_format else 150,
+            "num_predict": 1000 if (not json_format or think) else 300,
             "temperature": 0.1,
         },
     }
@@ -351,11 +360,11 @@ def call_ollama(prompt: str, model: str, config: dict,
     payload = json.dumps(payload_dict).encode()
 
     url = f"{config.get('ollama_url', 'http://localhost:11434')}/api/chat"
-    timeout_s = config.get("timeout_ms", 5000) / 1000
+    effective_timeout = (timeout_ms or config.get("timeout_ms", 5000)) / 1000
 
     req = urllib.request.Request(url, data=payload,
                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+    with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
         body = json.loads(resp.read())
     return body.get("message", {}).get("content", "")
 
@@ -474,6 +483,7 @@ actions against repository-defined rules using a local LLM.
 A developer expressed this convention:
 Statement: {statement}
 Evidence: "{evidence}"
+Scope hint (free text, NOT a file path): {scope_hint}
 Trigger hint: {trigger_hint}
 
 ACTUAL files in the repository that relate to this convention:
@@ -516,6 +526,7 @@ def build_synthesis_prompt(observation: dict, matched_files: list[str],
     return SYNTHESIS_PROMPT.format(
         statement=observation["statement"],
         evidence=observation.get("evidence", ""),
+        scope_hint=observation.get("scope_hint", "**"),
         trigger_hint=observation.get("trigger_hint", "any"),
         matched_files=files_text,
         sample_rules=rules_text,
@@ -544,20 +555,23 @@ def _glob_repo_files(scope_hint: str, project_root: str) -> list[str]:
     Handles both proper globs ('src/billing/**') and free-text hints
     ('billing module') by falling back to keyword-based directory search.
     """
-    matched = []
-    pattern = scope_hint
+    import glob as glob_mod
 
-    # If it looks like a glob pattern already, use it directly
-    if "*" in pattern or "/" in pattern or "." in pattern:
+    # If it looks like a glob pattern, use glob.glob with recursive=True
+    if "*" in scope_hint or "/" in scope_hint or "." in scope_hint:
+        pattern = scope_hint
         if not pattern.endswith("*"):
             pattern = pattern.rstrip("/") + "/**"
-        for root, dirs, files in os.walk(project_root):
-            dirs[:] = [d for d in dirs if not d.startswith(".")
-                       and d not in ("node_modules", "venv", ".venv", "__pycache__")]
-            for fname in files:
-                rel = os.path.relpath(os.path.join(root, fname), project_root)
-                if fnmatch(rel, pattern):
-                    matched.append(rel)
+        full_pattern = os.path.join(project_root, pattern)
+        matched = []
+        for path in glob_mod.glob(full_pattern, recursive=True):
+            if os.path.isfile(path):
+                rel = os.path.relpath(path, project_root)
+                # Skip hidden dirs and common non-source dirs
+                parts = rel.split(os.sep)
+                if any(p.startswith(".") or p in ("node_modules", "venv", ".venv", "__pycache__") for p in parts):
+                    continue
+                matched.append(rel)
                 if len(matched) >= 20:
                     return matched
         if matched:
@@ -570,6 +584,7 @@ def _glob_repo_files(scope_hint: str, project_root: str) -> list[str]:
     if not keywords:
         return []
 
+    matched = []
     for root, dirs, files in os.walk(project_root):
         dirs[:] = [d for d in dirs if not d.startswith(".")
                    and d not in ("node_modules", "venv", ".venv", "__pycache__")]
@@ -673,7 +688,10 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
         fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
         try:
             synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
-            synth_response = call_ollama(synth_prompt, model, config, json_format=False)
+            synth_response = call_ollama(
+                        synth_prompt, model, config, json_format=False,
+                        think=scribe_cfg.get("think", False),
+                        timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
         except Exception:
             continue
         finally:
@@ -693,7 +711,6 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
                 "model": model,
             }
             write_draft(drafts_dir, rule, draft_meta)
-            observation["drafted"] = True
 
 
 # ── Draft notification ──────────────────────────────────────────────
@@ -877,7 +894,10 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                 fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
                 try:
                     synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
-                    synth_response = call_ollama(synth_prompt, model, config, json_format=False)
+                    synth_response = call_ollama(
+                        synth_prompt, model, config, json_format=False,
+                        think=scribe_cfg.get("think", False),
+                        timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
                 except Exception:
                     continue
                 finally:
@@ -958,6 +978,8 @@ def main():
         )
 
     elif "--learn" in sys.argv:
+        if not scribe_cfg.get("sources", {}).get("documentation", True):
+            sys.exit(0)
         session_d = os.path.join(project_root, ".sentinel", "sessions", "learn")
         os.makedirs(session_d, exist_ok=True)
         result = learn(

@@ -366,7 +366,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, think=False, json_format=True):
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
@@ -394,6 +394,43 @@ prompt: |
     drafts_dir = os.path.join(config_dir, "drafts")
     draft_files = [f for f in os.listdir(drafts_dir) if f.endswith(".draft.yaml")]
     assert len(draft_files) == 1
+
+
+def test_observe_defers_when_lock_unavailable(tmp_path, config_dir):
+    """Should write deferred file when GPU lock is unavailable."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    with open(transcript, "w") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "test"}
+        ]}, "timestamp": "T1"}) + "\n")
+
+    config = sentinel_scribe.load_config(config_dir)
+    scribe_dir = str(tmp_path / "scribe")
+    session_dir = str(tmp_path / "sessions" / "test")
+
+    # Mock acquire_lock to return None (lock unavailable)
+    with patch("sentinel_lock.acquire_lock", return_value=None):
+        sentinel_scribe.observe(
+            user_prompt="never touch billing",
+            transcript_path=str(transcript),
+            session_id="test-session",
+            config=config,
+            config_dir=config_dir,
+            scribe_dir=scribe_dir,
+            session_dir=session_dir,
+        )
+
+    # Should have written a deferred file
+    deferred_dir = os.path.join(scribe_dir, "deferred")
+    assert os.path.isdir(deferred_dir)
+    deferred_files = os.listdir(deferred_dir)
+    assert len(deferred_files) == 1
+    with open(os.path.join(deferred_dir, deferred_files[0])) as f:
+        deferred = json.load(f)
+    assert deferred["user_prompt"] == "never touch billing"
+    assert deferred["session_id"] == "test-session"
 
 
 def test_observe_pipeline_skips_low_confidence(tmp_path, config_dir):
@@ -510,7 +547,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, think=False, json_format=True):
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
@@ -574,7 +611,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, think=False, json_format=True):
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
