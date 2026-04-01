@@ -618,6 +618,16 @@ def print_report(stats):
     print()
 
 
+def prepare_json(stats):
+    """Make stats dict JSON-serializable."""
+    # Drop raw confidence lists from rules, replace with avg
+    for r in stats["evaluation"]["rules"].values():
+        confs = r.pop("confidences", [])
+        r["avg_confidence"] = (round(sum(confs) / len(confs), 2)
+                               if confs else 0.0)
+    return stats
+
+
 def _find_log_file():
     """Resolve log_file from .claude/sentinel/config.yaml, walking up from cwd."""
     cwd = os.getcwd()
@@ -678,15 +688,13 @@ def main():
 
     stats = compute_stats(entries)
 
+    # Discover scribe directory and attach scribe stats
+    scribe_dir = _find_scribe_dir()
+    attach_scribe_stats(stats, entries, scribe_dir)
+
     if as_json:
-        # Make it JSON-serializable (drop raw lists, convert tuple keys)
-        for r in stats["rules"].values():
-            del r["confidences"]
-        stats["contested_targets"] = {
-            f"{rule_id}:{target}": count
-            for (rule_id, target), count in stats.get("contested_targets", {}).items()
-        }
-        print(json.dumps(stats, indent=2))
+        json_stats = prepare_json(stats)
+        print(json.dumps(json_stats, indent=2))
     else:
         print_report(stats)
 

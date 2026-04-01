@@ -337,3 +337,34 @@ def test_compute_all_stats_no_scribe():
         assert stats["scribe"] is None
     finally:
         os.unlink(path)
+
+
+def test_json_output_structure():
+    entries = [
+        {"level": "eval", "ts": "2026-04-01T10:00:00Z", "rule_id": "r1",
+         "severity": "block", "trigger": "file_write", "tool": "Write",
+         "target": "a.py", "violation": False, "blocked": False,
+         "confidence": 0.5, "threshold": 0.7, "elapsed_ms": 100,
+         "model": "llama3.2:3b"},
+    ]
+    path = _write_log(entries)
+    try:
+        all_entries = sentinel_stats.load_entries(path)
+        stats = sentinel_stats.compute_stats(all_entries)
+        sentinel_stats.attach_scribe_stats(stats, all_entries, None)
+        json_stats = sentinel_stats.prepare_json(stats)
+        output = json.loads(json.dumps(json_stats))
+
+        assert "evaluation" in output
+        assert "performance" in output
+        assert "scribe" in output
+        assert "health" in output
+        assert output["scribe"] is None
+        assert output["evaluation"]["total_evals"] == 1
+        assert "rules" in output["evaluation"]
+        assert "triggers" in output["evaluation"]
+        assert "tools" in output["evaluation"]
+        assert "models" in output["performance"]
+        assert "near_misses" in output["health"]
+    finally:
+        os.unlink(path)
