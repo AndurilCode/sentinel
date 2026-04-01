@@ -78,5 +78,11 @@ context:
 scribe:
   enabled: true
   # model: "gemma3:4b"             # default for all scribe steps
-  extraction_model: "gemma3:4b"  # override for extraction (reflect + learn)
-  synthesis_model: "gemma3:12b"  # override for validation+synthesis
+  extraction_model: "gemma3:4b"    # override for extraction (reflect + learn)
+  synthesis_model: "gemma3:12b"    # override for validation+synthesis
+  # extraction_timeout_ms: 15000   # timeout for extraction LLM calls
+  # extraction_num_predict: 1000   # max output tokens for extraction
+  # synthesis_timeout_ms: 15000    # timeout for validation+synthesis LLM calls
+  # synthesis_num_predict: 1000    # max output tokens for validation+synthesis
+  # temperature: 0.1               # LLM temperature for all scribe calls
+  # transcript_budget_chars: 4000  # max compacted transcript size before truncation

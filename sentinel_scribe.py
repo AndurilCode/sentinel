@@ -45,7 +45,11 @@ SCRIBE_DEFAULTS = {
     "synthesis_model": None,
     "guidance": None,
     "think": False,
+    "extraction_timeout_ms": 15000,
+    "extraction_num_predict": 1000,
     "synthesis_timeout_ms": 15000,
+    "synthesis_num_predict": 1000,
+    "temperature": 0.1,
     "transcript_budget_chars": 4000,
     "sources": {
         "documentation": True,
@@ -395,7 +399,7 @@ def call_ollama(prompt: str, model: str, config: dict,
         "think": think,
         "options": {
             "num_predict": num_predict or (1000 if (not json_format or think) else 300),
-            "temperature": 0.1,
+            "temperature": config.get("scribe", {}).get("temperature", 0.1),
         },
     }
     if json_format:
@@ -792,8 +796,8 @@ def reflect(transcript_path: str, session_id: str,
     try:
         prompt = build_transcript_extraction_prompt(transcript_text, summary, guidance)
         response = call_ollama(prompt, extraction_model, config, think=False,
-                              timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
-                              num_predict=1000)
+                              timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
+                              num_predict=scribe_cfg.get("extraction_num_predict", 1000))
     except Exception as exc:
         log_ollama(config, "scribe", "reflect_extraction", extraction_model,
                    (time.time() - t0) * 1000, error=str(exc))
@@ -853,7 +857,8 @@ def reflect(transcript_path: str, session_id: str,
             val_response = call_ollama(
                 val_prompt, synthesis_model, config, json_format=False,
                 think=scribe_cfg.get("think", False),
-                timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
+                timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
+                num_predict=scribe_cfg.get("synthesis_num_predict", 1000))
         except Exception as exc:
             log_ollama(config, "scribe", "reflect_validation", synthesis_model,
                        (time.time() - t1) * 1000, error=str(exc))
@@ -999,7 +1004,9 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
             t0 = time.time()
             try:
                 prompt = build_doc_extraction_prompt(chunk, source_type, guidance)
-                response = call_ollama(prompt, extraction_model, config, think=False)
+                response = call_ollama(prompt, extraction_model, config, think=False,
+                                      timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
+                                      num_predict=scribe_cfg.get("extraction_num_predict", 1000))
             except Exception as exc:
                 log_ollama(config, "scribe", "learn_extraction", extraction_model,
                            (time.time() - t0) * 1000, error=str(exc))
@@ -1051,7 +1058,8 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                     synth_response = call_ollama(
                         synth_prompt, synthesis_model, config, json_format=False,
                         think=scribe_cfg.get("think", False),
-                        timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
+                        timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
+                        num_predict=scribe_cfg.get("synthesis_num_predict", 1000))
                 except Exception as exc:
                     log_ollama(config, "scribe", "learn_synthesis", synthesis_model,
                                (time.time() - t1) * 1000, error=str(exc))
