@@ -261,7 +261,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None, num_predict=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
@@ -533,7 +533,7 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None, num_predict=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
@@ -601,7 +601,7 @@ def test_reflect_skips_redundant_conventions(tmp_path, config_dir):
     validation_response = '{"redundant": true, "reason": "Covered by existing no-eval rule"}'
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None):
+    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None, num_predict=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response

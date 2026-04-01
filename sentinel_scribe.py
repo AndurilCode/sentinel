@@ -373,7 +373,8 @@ def build_transcript_extraction_prompt(transcript_text: str,
 
 def call_ollama(prompt: str, model: str, config: dict,
                 json_format: bool = True, think: bool = False,
-                timeout_ms: Optional[int] = None) -> str:
+                timeout_ms: Optional[int] = None,
+                num_predict: Optional[int] = None) -> str:
     """Call Ollama chat endpoint. Returns response content string.
 
     json_format=True forces JSON output (for extraction). Set to False for
@@ -393,7 +394,7 @@ def call_ollama(prompt: str, model: str, config: dict,
         "stream": False,
         "think": think,
         "options": {
-            "num_predict": 1000 if (not json_format or think) else 300,
+            "num_predict": num_predict or (1000 if (not json_format or think) else 300),
             "temperature": 0.1,
         },
     }
@@ -790,7 +791,9 @@ def reflect(transcript_path: str, session_id: str,
     t0 = time.time()
     try:
         prompt = build_transcript_extraction_prompt(transcript_text, summary, guidance)
-        response = call_ollama(prompt, extraction_model, config, think=False)
+        response = call_ollama(prompt, extraction_model, config, think=False,
+                              timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
+                              num_predict=1000)
     except Exception as exc:
         log_ollama(config, "scribe", "reflect_extraction", extraction_model,
                    (time.time() - t0) * 1000, error=str(exc))
