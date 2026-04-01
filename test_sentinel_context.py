@@ -7,6 +7,51 @@ from sentinel_context import (
 )
 
 
+def test_compact_event_tool_result_with_error():
+    """Tool result entries should show error status."""
+    state = {"pending_tools": []}
+    # First: assistant entry with tool_use
+    tool_use_entry = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "npm test"}}
+    ]}, "timestamp": "T1"}
+    result1 = compact_event(tool_use_entry, state)
+    assert result1 is not None
+    assert "Bash" in result1["text"]
+
+    # Second: user entry with tool_result containing error
+    tool_result_entry = {"type": "user", "message": {"role": "user", "content": json.dumps([
+        {"tool_use_id": "tu_1", "type": "tool_result", "is_error": True, "content": "Error: 3 tests failed\nExpected foo got bar"}
+    ])}, "timestamp": "T2"}
+    result2 = compact_event(tool_result_entry, state)
+    assert result2 is not None
+    assert "ERROR" in result2["text"]
+    assert "3 tests failed" in result2["text"]
+
+
+def test_compact_event_tool_result_success():
+    """Successful tool results should show OK status."""
+    state = {"pending_tools": []}
+    tool_use_entry = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "tu_1", "name": "Edit", "input": {"file_path": "src/app.py"}}
+    ]}, "timestamp": "T1"}
+    compact_event(tool_use_entry, state)
+
+    tool_result_entry = {"type": "user", "message": {"role": "user", "content": json.dumps([
+        {"tool_use_id": "tu_1", "type": "tool_result", "content": "File edited successfully"}
+    ])}, "timestamp": "T2"}
+    result = compact_event(tool_result_entry, state)
+    assert result is not None
+    assert "OK" in result["text"]
+
+
+def test_compact_event_without_state_still_works():
+    """Backward compatibility: calling without state should still work."""
+    entry = {"type": "user", "message": {"role": "user", "content": "Add a login page"}, "timestamp": "T"}
+    result = compact_event(entry)
+    assert result is not None
+    assert "login page" in result["text"]
+
+
 def test_compact_event_user_message():
     entry = {"type": "user", "message": {"role": "user", "content": "Add a login page"}, "timestamp": "2026-03-31T10:00:00Z"}
     result = compact_event(entry)

@@ -228,6 +228,7 @@ def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]
         return []
 
     compacted = []
+    state = {"pending_tools": []}
     try:
         with open(transcript_path) as f:
             for line in f:
@@ -238,7 +239,7 @@ def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                evt = compact_event(entry)
+                evt = compact_event(entry, state)
                 if evt:
                     compacted.append(evt)
     except OSError:
@@ -256,6 +257,8 @@ def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]
             lines.append(f"[human] {text}")
         elif trigger == "stop":
             lines.append(f"[assistant] {text}")
+        elif trigger == "tool_result":
+            lines.append(f"[result] {text}")
         else:
             lines.append(f"[{trigger}] {text}")
     return lines

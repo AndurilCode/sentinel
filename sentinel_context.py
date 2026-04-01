@@ -13,6 +13,7 @@ State: .sentinel/sessions/<session_id>/summary.json + checkpoint
 import sys
 import os
 import json
+import ast
 import re
 import time
 import urllib.request
@@ -37,16 +38,60 @@ _SKIP_TOOLS = {"TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput",
                "Skill", "ToolSearch", "SendMessage", "TaskStop"}
 
 
-def compact_event(entry: dict) -> Optional[dict]:
-    """Extract task-relevant info from a transcript entry. Returns None to skip."""
+def compact_event(entry: dict, state: Optional[dict] = None) -> Optional[dict]:
+    """Extract task-relevant info from a transcript entry. Returns None to skip.
+
+    Args:
+        entry: A transcript entry dict.
+        state: Optional mutable dict with key "pending_tools" (list). When
+               provided, tool_use ids/names are tracked and resolved when the
+               next tool_result user entry arrives, annotating results with
+               error/success status.
+    """
     t = entry.get("type", "")
     msg = entry.get("message", {})
     ts = entry.get("timestamp", "")
 
     if t == "user" and isinstance(msg.get("content"), str):
         content = msg["content"]
-        if content.strip().startswith("[{") or content.strip().startswith("[{'"):
-            return None  # tool_result payload
+        stripped = content.strip()
+        if stripped.startswith("[{") or stripped.startswith("[{'"):
+            # Potential tool_result payload — process only when state is provided
+            if state is None:
+                return None
+            # Try to parse as JSON first, fall back to ast.literal_eval
+            try:
+                items = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                try:
+                    items = ast.literal_eval(stripped)
+                except Exception:
+                    return None
+            if not isinstance(items, list):
+                return None
+            parts = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "tool_result":
+                    continue
+                is_error = item.get("is_error", False)
+                raw_content = item.get("content", "")
+                if isinstance(raw_content, list):
+                    # content may be a list of content blocks
+                    text_parts = [
+                        block.get("text", "") for block in raw_content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    raw_content = " ".join(text_parts)
+                first_line = raw_content.split("\n")[0][:150] if raw_content else ""
+                if is_error:
+                    parts.append(f"→ ERROR: {first_line}")
+                else:
+                    parts.append("→ OK")
+            if not parts:
+                return None
+            return {"trigger": "tool_result", "ts": ts, "text": " ".join(parts)}
         return {"trigger": "user", "ts": ts, "text": content[:300]}
 
     elif t == "assistant":
@@ -92,6 +137,7 @@ def parse_transcript_entries(transcript_path: str, byte_offset: int = 0
                              ) -> tuple[list[dict], int]:
     """Read transcript from byte offset, return (compacted_events, new_offset)."""
     events = []
+    state = {"pending_tools": []}
     with open(transcript_path, "r") as f:
         f.seek(byte_offset)
         while True:
@@ -102,7 +148,7 @@ def parse_transcript_entries(transcript_path: str, byte_offset: int = 0
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            evt = compact_event(entry)
+            evt = compact_event(entry, state)
             if evt:
                 events.append(evt)
         new_offset = f.tell()
