@@ -2,13 +2,12 @@
 """
 Sentinel Scribe — Convention extraction and draft rule generation.
 
-Observes human prompts to coding agents, extracts reusable conventions,
+Observes coding sessions, extracts reusable conventions,
 and proposes draft Sentinel rules. The human shifts from rule author
 to rule reviewer.
 
 Modes:
-  --observe   UserPromptSubmit hook: classify human prompt for conventions
-  --flush     SessionEnd hook: process deferred observations
+  --reflect   SessionEnd hook: analyze full transcript for conventions
   --learn     Slash command: scan documentation files for conventions
 
 Dependencies: PyYAML (pip install pyyaml)
@@ -42,20 +41,19 @@ except ImportError:
 SCRIBE_DEFAULTS = {
     "enabled": True,
     "model": None,
-    "extraction_model": None,   # per-step override for extraction (observe + learn)
-    "synthesis_model": None,    # per-step override for synthesis (observe + learn)
+    "extraction_model": None,
+    "synthesis_model": None,
     "guidance": None,
-    "think": False,             # enable /think mode for synthesis (requires Ollama support)
-    "synthesis_timeout_ms": 15000,  # longer timeout for synthesis (generates more tokens)
+    "think": False,
+    "synthesis_timeout_ms": 15000,
+    "transcript_budget_chars": 4000,
     "sources": {
-        "user_prompts": True,
         "documentation": True,
     },
     "thresholds": {
         "extraction_confidence": 0.7,
         "draft_confidence": 0.8,
     },
-    "context_window_before": 5,
     "doc_globs": [
         "CLAUDE.md",
         "AGENTS.md",
@@ -209,25 +207,22 @@ def is_dismissed(scribe_dir: str, scope: str, trigger: str) -> bool:
     return False
 
 
-# ── Context window assembly ─────────────────────────────────────────
+def read_compacted_transcript(transcript_path: str,
+                               budget_chars: int = 4000) -> str:
+    """Read full transcript, compact events, return formatted string.
 
-
-def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]:
-    """Read transcript JSONL and return the last N compacted events as strings.
-
-    Returns a list of human-readable one-liners for the classification prompt.
-    Reads the entire transcript and takes the tail — transcripts are small
-    enough that this is faster than seeking backwards in JSONL.
+    If the result exceeds budget_chars, keeps head + tail with a truncation marker.
     """
     if not os.path.exists(transcript_path):
-        return []
+        return ""
 
     try:
         from sentinel_context import compact_event
     except ImportError:
-        return []
+        return ""
 
     compacted = []
+    state = {"pending_tools": []}
     try:
         with open(transcript_path) as f:
             for line in f:
@@ -238,61 +233,55 @@ def build_context_window(transcript_path: str, max_events: int = 5) -> list[str]
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                evt = compact_event(entry)
+                evt = compact_event(entry, state)
                 if evt:
                     compacted.append(evt)
     except OSError:
-        return []
+        return ""
 
-    # Take the last max_events entries
-    tail = compacted[-max_events:] if len(compacted) > max_events else compacted
-
-    # Format each event as a one-liner
+    # Format as one-liner strings
     lines = []
-    for evt in tail:
+    for evt in compacted:
         trigger = evt.get("trigger", "")
         text = evt.get("text", "")
         if trigger == "user":
             lines.append(f"[human] {text}")
+        elif trigger == "tool_result":
+            lines.append(f"[result] {text}")
         elif trigger == "stop":
             lines.append(f"[assistant] {text}")
         else:
             lines.append(f"[{trigger}] {text}")
-    return lines
+
+    full_text = "\n".join(lines)
+    if len(full_text) <= budget_chars:
+        return full_text
+
+    # Truncate: keep 40% head + 60% tail
+    head_budget = int(budget_chars * 0.4)
+    tail_budget = budget_chars - head_budget
+    head_lines = []
+    head_len = 0
+    for ln in lines:
+        if head_len + len(ln) + 1 > head_budget:
+            break
+        head_lines.append(ln)
+        head_len += len(ln) + 1
+
+    tail_lines = []
+    tail_len = 0
+    for ln in reversed(lines):
+        if tail_len + len(ln) + 1 > tail_budget:
+            break
+        tail_lines.insert(0, ln)
+        tail_len += len(ln) + 1
+
+    skipped = len(lines) - len(head_lines) - len(tail_lines)
+    marker = f"...[{skipped} events truncated]..."
+    return "\n".join(head_lines + [marker] + tail_lines)
 
 
 # ── Extraction prompts ──────────────────────────────────────────────
-
-HUMAN_EXTRACTION_PROMPT = """You are observing a conversation between a developer and a coding agent.
-Your job: determine if the LAST human message expresses a PERMANENT rule for this repository.
-
-MOST messages are NOT conventions. Return empty unless you are very confident.
-
-Conversation context:
-{context_window}
-{guidance_block}
-A convention is a PERMANENT rule the developer wants enforced in ALL future sessions:
-- "never modify billing directly" — boundary (permanent)
-- "always run migrations before deploying" — process (permanent)
-- "do not use eval() anywhere" — constraint (permanent)
-
-The developer MUST use language indicating permanence: "never", "always", "from now on",
-"in this repo we...", "the rule is...", or similar. A single correction is NOT a convention.
-
-RETURN EMPTY for all of the following:
-- Task instructions: "add a login page", "fix the bug", "check the logs"
-- Current-task corrections: "the field is X not Y", "use this approach instead"
-- Debugging: "it's not working", "try this", "look at the output"
-- Observations: "it works now", "the hook is firing", "see these logs"
-- Questions: "is there any logic that...", "show me...", "what does this do?"
-- Status updates: "ok", "hello", "thanks", "done", "let's move on"
-- Agent instructions about the agent's own code: "add logging here", "change this prompt"
-
-Return empty (conventions: []) for at least 90% of messages. Only extract when
-the developer is clearly stating a rule they want permanently enforced.
-
-If no convention: {{"conventions": []}}
-If found: {{"conventions": [{{"statement": "...", "scope_hint": "file glob like src/billing/** or ** for all files", "trigger_hint": "file_write|bash|mcp|unknown", "confidence": 0.0-1.0, "evidence": "exact quote from the developer"}}]}}"""
 
 DOC_EXTRACTION_PROMPT = """You are reading a human artifact from a software repository.
 Extract any conventions, constraints, or rules being expressed.
@@ -323,22 +312,59 @@ def _guidance_block(guidance: Optional[str]) -> str:
     return ""
 
 
-def build_human_extraction_prompt(window_lines: list[str],
-                                   guidance: Optional[str]) -> str:
-    """Build the human channel extraction prompt."""
-    context = "\n".join(window_lines)
-    return HUMAN_EXTRACTION_PROMPT.format(
-        context_window=context,
-        guidance_block=_guidance_block(guidance),
-    )
-
-
 def build_doc_extraction_prompt(content: str, source_type: str,
                                  guidance: Optional[str]) -> str:
     """Build the documentation extraction prompt."""
     return DOC_EXTRACTION_PROMPT.format(
         source_type=source_type,
         content=content,
+        guidance_block=_guidance_block(guidance),
+    )
+
+
+TRANSCRIPT_EXTRACTION_PROMPT = """You are observing a completed coding session between a developer and a coding agent.
+Your job: extract any PERMANENT conventions the agent should follow in ALL future sessions.
+
+{summary_block}
+SESSION TRANSCRIPT:
+{transcript_text}
+{guidance_block}
+Look for TWO types of signals:
+
+1. HUMAN-EXPRESSED RULES — the developer states a permanent convention:
+   - "never modify billing directly" — boundary (permanent)
+   - "always run tests before pushing" — process (permanent)
+   - Language: "never", "always", "from now on", "in this repo we...", "the rule is..."
+
+2. AGENT SELF-CORRECTIONS — the agent made a mistake and corrected itself:
+   - Tool error → agent adjusts approach (implies a convention about correct usage)
+   - Write/edit → revise same file (implies the first approach was wrong)
+   - Test failure → code fix (implies a convention about correct implementation)
+   - The correction pattern itself reveals what the convention should be
+
+MOST sessions yield ZERO conventions. Return empty unless very confident.
+
+RETURN EMPTY for:
+- Normal task execution (writing code, reading files, running commands)
+- One-off debugging that doesn't imply a general rule
+- Agent exploring/learning about the codebase
+- Successful first attempts (no correction needed = no convention to learn)
+
+If no conventions: {{"conventions": []}}
+If found: {{"conventions": [{{"statement": "...", "scope_hint": "file glob like src/billing/** or ** for all files", "trigger_hint": "file_write|bash|mcp|unknown", "confidence": 0.0-1.0, "evidence": "exact transcript excerpt showing the signal", "source": "user_feedback|agent_self_correction"}}]}}"""
+
+
+def build_transcript_extraction_prompt(transcript_text: str,
+                                        summary: Optional[dict],
+                                        guidance: Optional[str]) -> str:
+    """Build the transcript-level extraction prompt."""
+    if summary:
+        summary_block = f"SESSION SUMMARY:\n{json.dumps(summary)}\n"
+    else:
+        summary_block = ""
+    return TRANSCRIPT_EXTRACTION_PROMPT.format(
+        summary_block=summary_block,
+        transcript_text=transcript_text,
         guidance_block=_guidance_block(guidance),
     )
 
@@ -563,7 +589,113 @@ def parse_synthesis_response(response: str) -> Optional[dict]:
     return None
 
 
-# ── Observe pipeline ────────────────────────────────────────────────
+# ── Validation + Synthesis ───────────────────────────────────────────
+
+VALIDATION_SYNTHESIS_PROMPT = """You are validating a convention extracted from a coding session and deciding if it
+should become a new Sentinel rule.
+
+EXTRACTED CONVENTION:
+Statement: {statement}
+Evidence: "{evidence}"
+Source: {source}
+Scope hint: {scope_hint}
+Trigger hint: {trigger_hint}
+
+ACTUAL files in the repository matching this convention:
+{matched_files}
+
+EXISTING ACTIVE RULES in this repository:
+{existing_rules}
+
+TASK:
+1. Is this convention SEMANTICALLY REDUNDANT with any existing rule above?
+   (Same intent, even if worded differently or with different scope.)
+2. If NOT redundant, generate a complete Sentinel rule YAML.
+
+If REDUNDANT, return ONLY this JSON:
+{{"redundant": true, "reason": "explanation of which rule covers this"}}
+
+If NOT redundant, return ONLY valid YAML for a new rule with these fields:
+- id: kebab-case identifier
+- trigger: one of file_write, bash, mcp, or any
+- severity: block or warn
+- scope: list of glob patterns derived from the ACTUAL file paths above
+- exclude: list of glob patterns for exceptions (omit if none)
+- prompt: the evaluation prompt using {{{{template_vars}}}} for the chosen trigger:
+  - file_write trigger: use {{{{file_path}}}}, {{{{content_snippet}}}}
+  - bash trigger: use {{{{command}}}}
+  - mcp trigger: use {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}}
+
+The prompt must end with:
+Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+
+Return ONLY the JSON or YAML, no other text."""
+
+
+def build_validation_prompt(observation: dict, existing_rules: list[dict],
+                             matched_files: list[str]) -> str:
+    """Build the validation + synthesis prompt."""
+    files_text = "\n".join(f"  - {f}" for f in matched_files[:20]) if matched_files else "  (no matching files found)"
+
+    rules_text = ""
+    for r in existing_rules:
+        rules_text += f"\n  - id: {r.get('id', '?')}, trigger: {r.get('trigger', '?')}, scope: {r.get('scope', [])}, prompt: {str(r.get('prompt', ''))[:100]}"
+    if not rules_text:
+        rules_text = "\n  (no existing rules)"
+
+    return VALIDATION_SYNTHESIS_PROMPT.format(
+        statement=observation["statement"],
+        evidence=observation.get("evidence", ""),
+        source=observation.get("source", "unknown"),
+        scope_hint=observation.get("scope_hint", "**"),
+        trigger_hint=observation.get("trigger_hint", "any"),
+        matched_files=files_text,
+        existing_rules=rules_text,
+    )
+
+
+def parse_validation_response(response: str) -> Optional[dict]:
+    """Parse validation LLM response.
+
+    Returns:
+      {"redundant": True, "reason": "..."} if redundant
+      {"redundant": False, "rule": {...}} if a new rule was generated
+      None if unparseable
+    """
+    stripped = response.strip()
+
+    # Try JSON first (redundancy response)
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, dict) and "redundant" in data:
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try after stripping markdown fences
+    cleaned = re.sub(r'^```(?:json|yaml)?\s*\n?', '', stripped)
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+
+    # Try JSON again
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict) and "redundant" in data:
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try YAML (new rule response)
+    try:
+        rule = yaml.safe_load(cleaned)
+        if isinstance(rule, dict) and "prompt" in rule:
+            return {"redundant": False, "rule": rule}
+    except yaml.YAMLError:
+        pass
+
+    return None
+
+
+# ── File matching ────────────────────────────────────────────────────
 
 def _glob_repo_files(scope_hint: str, project_root: str) -> list[str]:
     """Find files matching scope_hint in the repo.
@@ -614,10 +746,12 @@ def _glob_repo_files(scope_hint: str, project_root: str) -> list[str]:
     return matched
 
 
-def observe(user_prompt: str, transcript_path: str, session_id: str,
+# ── Reflect pipeline ─────────────────────────────────────────────────
+
+def reflect(transcript_path: str, session_id: str,
             config: dict, config_dir: str, scribe_dir: str,
             session_dir: str) -> None:
-    """Full --observe pipeline: extract convention from human prompt, optionally synthesize draft."""
+    """Full --reflect pipeline: analyze transcript for conventions, validate, draft."""
     from sentinel_lock import acquire_lock, release_lock, LockPriority
 
     scribe_cfg = config.get("scribe", SCRIBE_DEFAULTS)
@@ -626,63 +760,65 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
     guidance = scribe_cfg.get("guidance")
     thresholds = scribe_cfg.get("thresholds", {})
     extraction_confidence = thresholds.get("extraction_confidence", 0.7)
-    draft_confidence = thresholds.get("draft_confidence", 0.7)
 
-    # 1. Build context window from transcript
-    max_events = scribe_cfg.get("context_window_before", 5)
-    window_lines = build_context_window(transcript_path, max_events=max_events)
-    window_lines.append(f"[human] {user_prompt[:300]}")
+    # 1. Read and compact transcript
+    budget = scribe_cfg.get("transcript_budget_chars", 4000)
+    transcript_text = read_compacted_transcript(transcript_path, budget_chars=budget)
+    if not transcript_text.strip():
+        log_ollama(config, "scribe", "reflect", extraction_model, 0,
+                   response="empty_transcript")
+        return
 
-    # 2. Acquire GPU lock (P3)
+    # 2. Load session summary (optional context)
+    summary = None
+    summary_path = os.path.join(session_dir, "summary.json")
+    try:
+        with open(summary_path) as f:
+            summary = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # 3. Phase 1: Extraction
     lock_path = os.path.join(session_dir, "ollama.lock")
     os.makedirs(session_dir, exist_ok=True)
     fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
     if fd is None:
-        log_ollama(config, "scribe", "extraction", extraction_model, 0,
-                   error="lock_timeout:deferred")
-        deferred_dir = os.path.join(scribe_dir, "deferred")
-        os.makedirs(deferred_dir, exist_ok=True)
-        deferred = {
-            "user_prompt": user_prompt[:300],
-            "transcript_path": transcript_path,
-            "session_id": session_id,
-            "window_lines": window_lines,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        }
-        deferred_path = os.path.join(deferred_dir, f"{int(time.time() * 1000)}.json")
-        with open(deferred_path, "w") as f:
-            json.dump(deferred, f)
+        log_ollama(config, "scribe", "reflect_extraction", extraction_model, 0,
+                   error="lock_timeout")
         return
 
     t0 = time.time()
     try:
-        # 3. SLM classify + extract
-        prompt = build_human_extraction_prompt(window_lines, guidance)
+        prompt = build_transcript_extraction_prompt(transcript_text, summary, guidance)
         response = call_ollama(prompt, extraction_model, config, think=False)
     except Exception as exc:
-        log_ollama(config, "scribe", "extraction", extraction_model,
+        log_ollama(config, "scribe", "reflect_extraction", extraction_model,
                    (time.time() - t0) * 1000, error=str(exc))
         return
     finally:
         release_lock(fd)
-    log_ollama(config, "scribe", "extraction", extraction_model,
+    log_ollama(config, "scribe", "reflect_extraction", extraction_model,
                (time.time() - t0) * 1000, response=response)
 
     conventions = parse_extraction_response(response)
     if not conventions:
-        log_ollama(config, "scribe", "extraction", extraction_model,
-                   (time.time() - t0) * 1000, response="no_conventions")
         return
 
-    # 4. Process each extracted convention
+    # 4. Phase 2: Validate each convention
+    rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
+    drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
+    project_root = os.path.dirname(os.path.dirname(config_dir))
+    active_rules = load_active_rules(rules_dir)
+
     for conv in conventions:
         confidence = conv.get("confidence", 0.0)
         if confidence < extraction_confidence:
             continue
 
+        source = conv.get("source", "unknown")
         observation = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "source": "user_prompt",
+            "source": source,
             "session_id": session_id,
             "statement": conv.get("statement", ""),
             "scope_hint": conv.get("scope_hint", "**"),
@@ -693,50 +829,51 @@ def observe(user_prompt: str, transcript_path: str, session_id: str,
         }
         append_observation(scribe_dir, observation)
 
-        if confidence < draft_confidence:
+        # Phase 2A: Structural dedup
+        if is_dismissed(scribe_dir, conv.get("scope_hint", "**"),
+                        conv.get("trigger_hint", "unknown")):
             continue
 
+        # Phase 2B: Semantic dedup + synthesis (LLM judge)
         scope_hint = conv.get("scope_hint", "**")
-        rules_dir = config.get("rules_dir", os.path.join(config_dir, "rules"))
-        drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
-
-        # No deterministic pre-synthesis checks on scope_hint — the hint is
-        # LLM-generated free text (possibly in any language) and cannot be
-        # reliably matched against active rule globs or dismissed entries.
-        # The human reviews drafts via /sentinel-drafts.
-
-        project_root = os.path.dirname(os.path.dirname(config_dir))
         matched_files = _glob_repo_files(scope_hint, project_root)
-        active_rules = load_active_rules(rules_dir)
-        sample_rules = active_rules[:3]
 
         fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
         if fd2 is None:
-            log_ollama(config, "scribe", "synthesis", synthesis_model, 0,
+            log_ollama(config, "scribe", "reflect_validation", synthesis_model, 0,
                        error="lock_timeout")
             continue
+
         t1 = time.time()
         try:
-            synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
-            synth_response = call_ollama(
-                        synth_prompt, synthesis_model, config, json_format=False,
-                        think=scribe_cfg.get("think", False),
-                        timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
+            val_prompt = build_validation_prompt(conv, active_rules, matched_files)
+            val_response = call_ollama(
+                val_prompt, synthesis_model, config, json_format=False,
+                think=scribe_cfg.get("think", False),
+                timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000))
         except Exception as exc:
-            log_ollama(config, "scribe", "synthesis", synthesis_model,
+            log_ollama(config, "scribe", "reflect_validation", synthesis_model,
                        (time.time() - t1) * 1000, error=str(exc))
             continue
         finally:
             release_lock(fd2)
-        log_ollama(config, "scribe", "synthesis", synthesis_model,
-                   (time.time() - t1) * 1000, response=synth_response)
+        log_ollama(config, "scribe", "reflect_validation", synthesis_model,
+                   (time.time() - t1) * 1000, response=val_response)
 
-        rule = parse_synthesis_response(synth_response)
+        result = parse_validation_response(val_response)
+        if result is None:
+            continue
+        if result.get("redundant"):
+            log_ollama(config, "scribe", "reflect_validation", synthesis_model, 0,
+                       response=f"redundant: {result.get('reason', '')}")
+            continue
+
+        rule = result.get("rule", {})
         if rule and rule.get("prompt"):
             rule.setdefault("id", re.sub(r'[^a-z0-9-]', '-',
                             conv["statement"][:40].lower().strip()).strip("-"))
             draft_meta = {
-                "source": "user_prompt",
+                "source": source,
                 "observed": 1,
                 "first_seen": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "evidence": [conv.get("evidence", "")],
@@ -790,47 +927,6 @@ def check_pending_drafts(drafts_dir: str, session_dir: str,
 
     plural = "s" if recent_count > 1 else ""
     return f"Sentinel Scribe: {recent_count} new draft rule{plural} pending review. Run /sentinel-drafts to see them."
-
-
-# ── Flush mode ──────────────────────────────────────────────────────
-
-def flush(config: dict, config_dir: str, scribe_dir: str,
-          session_dir: str, session_id: str) -> None:
-    """Process deferred observations from lock timeouts."""
-    scribe_cfg = config.get("scribe", {})
-    flush_model = _resolve_model(scribe_cfg, config, "extraction")
-    deferred_dir = os.path.join(scribe_dir, "deferred")
-    if not os.path.isdir(deferred_dir):
-        log_ollama(config, "scribe", "flush", flush_model, 0,
-                   response="no deferred dir")
-        return
-
-    files = sorted(f for f in os.listdir(deferred_dir) if f.endswith(".json"))
-    log_ollama(config, "scribe", "flush", flush_model, 0,
-               response=f"found {len(files)} deferred")
-
-    for fname in files:
-        if not fname.endswith(".json"):
-            continue
-        path = os.path.join(deferred_dir, fname)
-        try:
-            with open(path) as f:
-                deferred = json.load(f)
-            observe(
-                user_prompt=deferred.get("user_prompt", ""),
-                transcript_path=deferred.get("transcript_path", ""),
-                session_id=deferred.get("session_id", session_id),
-                config=config,
-                config_dir=config_dir,
-                scribe_dir=scribe_dir,
-                session_dir=session_dir,
-            )
-            os.unlink(path)
-        except Exception:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
 
 
 # ── Learn mode ──────────────────────────────────────────────────────
@@ -998,51 +1094,29 @@ def main():
 
     log_model = _resolve_model(scribe_cfg, config, "extraction")
 
-    if "--observe" in sys.argv:
-        if not scribe_cfg.get("sources", {}).get("user_prompts", True):
-            log_ollama(config, "scribe", "observe", log_model, 0,
-                       error="source_disabled")
-            sys.exit(0)
+    if "--reflect" in sys.argv:
         try:
             raw_data = json.loads(sys.stdin.read())
         except Exception:
-            log_ollama(config, "scribe", "observe", log_model, 0,
+            log_ollama(config, "scribe", "reflect", log_model, 0,
                        error="stdin_parse_failed")
             sys.exit(0)
 
         session_id = raw_data.get("session_id", "unknown")
-        user_prompt = raw_data.get("prompt", "") or raw_data.get("user_prompt", "")
         transcript_path = raw_data.get("transcript_path", "")
-        if not user_prompt:
-            log_ollama(config, "scribe", "observe", log_model, 0,
-                       error="empty_prompt",
-                       response=f"keys={list(raw_data.keys())}")
+        if not transcript_path:
+            log_ollama(config, "scribe", "reflect", log_model, 0,
+                       error="no_transcript_path")
             sys.exit(0)
 
         session_d = _session_dir(session_id, config_dir)
-        observe(
-            user_prompt=user_prompt,
+        reflect(
             transcript_path=transcript_path,
             session_id=session_id,
             config=config,
             config_dir=config_dir,
             scribe_dir=scribe_d,
             session_dir=session_d,
-        )
-
-    elif "--flush" in sys.argv:
-        try:
-            raw_data = json.loads(sys.stdin.read())
-        except Exception:
-            raw_data = {}
-        session_id = raw_data.get("session_id", "unknown")
-        session_d = _session_dir(session_id, config_dir)
-        flush(
-            config=config,
-            config_dir=config_dir,
-            scribe_dir=scribe_d,
-            session_dir=session_d,
-            session_id=session_id,
         )
 
     elif "--learn" in sys.argv:

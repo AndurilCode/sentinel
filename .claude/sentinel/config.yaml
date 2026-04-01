@@ -66,13 +66,17 @@ context:
   lock_timeout_s: 30
   summary_max_words: 150
 
-# Scribe — convention learning from user prompts and documentation.
+# Scribe — convention learning from session transcripts and documentation.
+# Runs at session end (Stop hook) to analyze the full transcript for:
+#   1. Human-expressed rules ("never do X", "always do Y")
+#   2. Agent self-corrections (tool error → fix, write → revise)
+#
 # Per-step model overrides let you use a fast model for extraction
-# (binary classify + JSON) and a heavier model for synthesis (rule writing).
+# (classify transcript + JSON) and a heavier model for validation+synthesis.
 #
 # Resolution order: scribe.<step>_model → scribe.model → top-level model
 scribe:
   enabled: true
   # model: "gemma3:4b"             # default for all scribe steps
-  extraction_model: "gemma3:4b"  # override for extraction (observe + learn)
-  synthesis_model: "gemma3:12b"  # override for synthesis (rule drafting)
+  extraction_model: "gemma3:4b"  # override for extraction (reflect + learn)
+  synthesis_model: "gemma3:12b"  # override for validation+synthesis
