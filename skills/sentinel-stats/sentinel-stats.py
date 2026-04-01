@@ -105,6 +105,21 @@ def _detect_contested(evals):
     return contested_by_rule, contested_targets
 
 
+def _compute_percentiles(ms_list):
+    """Compute min/max/median/p95/mean from a sorted list of ms values."""
+    if not ms_list:
+        return {"min_ms": 0, "max_ms": 0, "median_ms": 0,
+                "p95_ms": 0, "mean_ms": 0}
+    s = sorted(ms_list)
+    return {
+        "min_ms": s[0],
+        "max_ms": s[-1],
+        "median_ms": s[len(s) // 2],
+        "p95_ms": s[int(len(s) * 0.95)],
+        "mean_ms": int(sum(s) / len(s)),
+    }
+
+
 def compute_stats(entries):
     evals = [e for e in entries if e.get("level") == "eval"]
     skipped = [e for e in entries if e.get("level") == "skipped"]
@@ -117,6 +132,21 @@ def compute_stats(entries):
         "contested": 0,
     })
 
+    # Per-trigger stats
+    triggers = defaultdict(lambda: {"evals": 0, "violations": 0, "blocks": 0})
+
+    # Per-tool stats
+    tools = defaultdict(lambda: {"evals": 0, "violations": 0, "blocks": 0})
+
+    # Per-model latency
+    model_ms = defaultdict(list)
+
+    # Near-miss detection
+    near_misses = defaultdict(lambda: {"count": 0, "example_targets": []})
+    near_miss_total = 0
+
+    all_ms = []
+
     for e in evals:
         rid = e.get("rule_id", "unknown")
         r = rules[rid]
@@ -127,21 +157,63 @@ def compute_stats(entries):
         r["max_ms"] = max(r["max_ms"], ms)
         conf = e.get("confidence", 0)
         r["confidences"].append(conf)
+
+        if ms:
+            all_ms.append(ms)
+
+        # Trigger aggregation
+        trig = e.get("trigger")
+        if trig:
+            triggers[trig]["evals"] += 1
+            if e.get("violation"):
+                triggers[trig]["violations"] += 1
+            if e.get("blocked"):
+                triggers[trig]["blocks"] += 1
+
+        # Tool aggregation
+        tool = e.get("tool")
+        if tool:
+            tools[tool]["evals"] += 1
+            if e.get("violation"):
+                tools[tool]["violations"] += 1
+            if e.get("blocked"):
+                tools[tool]["blocks"] += 1
+
+        # Model latency
+        model = e.get("model")
+        if model and ms:
+            model_ms[model].append(ms)
+
         if e.get("violation"):
             r["violations"] += 1
             if e.get("blocked"):
                 r["blocks"] += 1
             else:
                 r["warns"] += 1
+        else:
+            # Near-miss: non-violation where confidence is close to threshold
+            threshold = e.get("threshold", 0)
+            if threshold and conf and threshold - conf <= 0.1 and conf < threshold:
+                near_miss_total += 1
+                nm = near_misses[rid]
+                nm["count"] += 1
+                target = e.get("target", "unknown")
+                if len(nm["example_targets"]) < 3:
+                    nm["example_targets"].append(target)
 
     for e in skipped:
         rid = e.get("rule_id", "unknown")
         rules[rid]["skipped"] += 1
 
     # Detect contested blocks (likely false positives)
-    contested_by_rule, contested_targets = _detect_contested(evals)
-    for rid, targets in contested_by_rule.items():
-        rules[rid]["contested"] += len(targets)
+    contested_by_rule, contested_targets_raw = _detect_contested(evals)
+    for rid, tgts in contested_by_rule.items():
+        rules[rid]["contested"] += len(tgts)
+
+    # Convert contested_targets to string keys
+    contested_targets = {}
+    for (rid, target), count in contested_targets_raw.items():
+        contested_targets[f"{rid}:{target}"] = count
 
     # Per-target stats (files/commands that triggered the most evaluations)
     targets = defaultdict(lambda: {"evals": 0, "blocks": 0, "violations": 0})
@@ -153,29 +225,47 @@ def compute_stats(entries):
         if e.get("blocked"):
             targets[t]["blocks"] += 1
 
-    # Latency
-    all_ms = [e.get("elapsed_ms", 0) for e in evals if e.get("elapsed_ms")]
-    all_ms.sort()
-
     # Timeouts (skipped entries that mention timeout)
     timeouts = [e for e in skipped if "timeout" in e.get("reason", "").lower()]
 
+    # Per-model performance
+    models = {}
+    for model, ms_list in model_ms.items():
+        p = _compute_percentiles(ms_list)
+        models[model] = {
+            "evals": len(ms_list),
+            "min_ms": p["min_ms"],
+            "median_ms": p["median_ms"],
+            "p95_ms": p["p95_ms"],
+            "max_ms": p["max_ms"],
+            "mean_ms": p["mean_ms"],
+        }
+
     return {
-        "total_evals": len(evals),
-        "total_skipped": len(skipped),
-        "total_timeouts": len(timeouts),
-        "total_violations": sum(1 for e in evals if e.get("violation")),
-        "total_blocks": sum(1 for e in evals if e.get("blocked")),
-        "latency": {
-            "min_ms": all_ms[0] if all_ms else 0,
-            "max_ms": all_ms[-1] if all_ms else 0,
-            "median_ms": all_ms[len(all_ms) // 2] if all_ms else 0,
-            "p95_ms": all_ms[int(len(all_ms) * 0.95)] if all_ms else 0,
-            "mean_ms": int(sum(all_ms) / len(all_ms)) if all_ms else 0,
+        "evaluation": {
+            "total_evals": len(evals),
+            "total_violations": sum(1 for e in evals if e.get("violation")),
+            "total_blocks": sum(1 for e in evals if e.get("blocked")),
+            "total_skipped": len(skipped),
+            "total_timeouts": len(timeouts),
+            "rules": rules,
+            "triggers": dict(triggers),
+            "tools": dict(tools),
+            "targets": dict(targets),
         },
-        "rules": rules,
-        "targets": targets,
-        "contested_targets": contested_targets,
+        "performance": {
+            "latency": _compute_percentiles(all_ms),
+            "models": models,
+        },
+        "scribe": None,
+        "health": {
+            "issues": [],
+            "near_misses": {
+                "total": near_miss_total,
+                "by_rule": dict(near_misses),
+            },
+            "contested_targets": contested_targets,
+        },
     }
 
 
