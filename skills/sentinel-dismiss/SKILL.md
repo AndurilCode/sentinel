@@ -40,3 +40,10 @@ Or equivalently, append to `.sentinel/scribe/dismissed.jsonl`:
 5. Delete `drafts/<id>.draft.yaml`
 
 6. Confirm: "Draft `<id>` dismissed. Scribe won't re-propose rules for this scope and trigger."
+
+## Next steps
+
+After dismissing the draft, suggest to the user:
+
+- `/sentinel-drafts` — review remaining pending drafts
+- `/sentinel-rule` — create a rule manually if the dismissed draft was close but needed a different approach

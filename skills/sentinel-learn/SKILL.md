@@ -40,3 +40,11 @@ scribe:
     - "CLAUDE.md"
     - "docs/architecture/**/*.md"
 ```
+
+## Next steps
+
+After scanning, suggest the most relevant action:
+
+- `/sentinel-drafts` — review the proposed draft rules (if any were created)
+- `/sentinel-config` — customize `scribe.doc_globs` to scan additional documentation sources
+- `/sentinel-rule` — create a rule manually for conventions that aren't captured in documentation

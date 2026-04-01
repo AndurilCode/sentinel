@@ -31,3 +31,10 @@ The user provides the draft rule ID as an argument: `/sentinel-promote <id>`
    - Delete the draft file from `drafts/`
 
 5. Confirm: "Rule `<id>` is now active. It will be evaluated on the next matching tool use."
+
+## Next steps
+
+After promoting the rule, suggest these to the user:
+
+- `/sentinel-stats` — monitor the new rule's performance once it starts firing
+- `/sentinel-drafts` — review remaining pending drafts

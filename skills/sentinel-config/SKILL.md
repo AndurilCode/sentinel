@@ -65,3 +65,11 @@ View or update the Sentinel configuration in the current repository.
 |---|---|---|
 | 8 GB RAM | `gemma3:4b` | Dense, ~3 GB at Q4 |
 | 16 GB RAM | `gemma3:12b` | Dense, best accuracy for block rules |
+
+## Next steps
+
+After viewing or updating config, suggest these to the user:
+
+- `/sentinel-stats` — see how the current configuration affects rule performance
+- `/sentinel-rule` — create a new rule if the rules directory is empty
+- `/sentinel-learn` — scan documentation for conventions to enforce automatically

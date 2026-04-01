@@ -39,4 +39,12 @@ N pending draft rules:
 
 5. If no drafts exist, say: "No pending draft rules. Scribe analyzes sessions at exit for conventions (human feedback and agent self-corrections), or run /sentinel-learn to scan documentation."
 
-6. After listing, remind: "Use /sentinel-promote <id> to activate a draft, or /sentinel-dismiss <id> to discard it."
+6. After listing, remind: "Use `/sentinel-promote <id>` to activate a draft, or `/sentinel-dismiss <id>` to discard it."
+
+## Next steps
+
+After listing drafts, suggest these to the user:
+
+- `/sentinel-promote <id>` — activate a draft rule you want to enforce
+- `/sentinel-dismiss <id>` — discard a draft and prevent re-proposal
+- `/sentinel-learn` — scan documentation again if no drafts exist yet

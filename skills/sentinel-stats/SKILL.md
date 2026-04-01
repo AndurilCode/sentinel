@@ -31,3 +31,11 @@ Present the output to the user. Then provide a brief interpretation highlighting
 - **Hot targets**: Files or commands that trigger many evaluations — may need scope exclusions or rule consolidation.
 
 If the user wants machine-readable output, run with `--json`.
+
+## Next steps
+
+Based on the stats interpretation, suggest the most relevant action:
+
+- `/sentinel-rule` — edit or create rules to fix noisy, flaky, or missing coverage
+- `/sentinel-config` — tune `confidence_threshold`, `timeout_ms`, or switch models if latency is high
+- `/sentinel-learn` — discover new conventions from documentation if rule coverage is thin

@@ -148,3 +148,11 @@ On approval, write the rule to `.claude/sentinel/rules/<rule-id>.yaml`.
 The `rule-id` should be a kebab-case slug derived from the rule's purpose (e.g., `billing-protection`, `no-force-push`, `mcp-prod-guard`).
 
 If the user wants changes, revise and present again. Only write after explicit approval.
+
+## Next steps
+
+After the rule is written, suggest these to the user:
+
+- `/sentinel-stats` — monitor this rule's performance after it fires (requires `log_file` in config)
+- `/sentinel-rule` — create another rule to protect a different concern
+- `/sentinel-config` — tune model, thresholds, or timeouts if needed

@@ -177,10 +177,18 @@ Expected: exit 0, no output (no rules to match yet, so it passes through).
 
 Tell the user:
 
-> Sentinel initialized at `.claude/sentinel/`. Ollama is running with `gemma3:4b`. Use `/sentinel-rule` to create your first rule.
+> Sentinel initialized at `.claude/sentinel/`. Ollama is running with `gemma3:4b`.
 
 If Copilot CLI was detected, also tell the user:
 
 > Copilot CLI hooks installed at `.github/hooks/sentinel.json`. The `preToolUse` hook will evaluate rules on every tool call. Note: `info` rules with `post: true` require PostToolUse hooks, which are not supported by Copilot CLI — those rules will be skipped.
 
 Do NOT copy example rules into the repo. The rules directory starts empty.
+
+## Next steps
+
+Suggest these to the user:
+
+- `/sentinel-rule` — create your first rule manually by describing what to protect
+- `/sentinel-learn` — auto-scan your documentation (CLAUDE.md, ADRs, READMEs) for conventions to enforce
+- `/sentinel-config` — review or tune the default configuration
