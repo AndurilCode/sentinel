@@ -38,4 +38,9 @@ prompt: |
   version bump in .claude-plugin/plugin.json and marketplace.json?
   If the file being written IS plugin.json or marketplace.json
   (i.e. the version bump itself), this is NOT a violation.
+
+  NOT NEGOTIABLE:
+  - Skills are ALWAYS releasable since they are shipped with the plugin and affect runtime behavior.
+  - Hooks.json is ALWAYS releasable since they ship with the plugin and affect runtime behavior.
+
   Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
