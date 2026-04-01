@@ -1008,3 +1008,35 @@ def test_reflect_no_conventions(tmp_path, config_dir):
 
     obs_path = os.path.join(scribe_dir, "observations.jsonl")
     assert not os.path.exists(obs_path)
+
+
+def test_main_reflect_mode(tmp_path, config_dir, monkeypatch):
+    """--reflect mode should invoke reflect() with transcript from stdin."""
+    import sentinel_scribe
+
+    transcript = tmp_path / "transcript.jsonl"
+    with open(transcript, "w") as f:
+        f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}, "timestamp": "T1"}) + "\n")
+
+    stdin_data = json.dumps({
+        "session_id": "test-session",
+        "transcript_path": str(transcript),
+    })
+
+    monkeypatch.setattr("sys.argv", ["sentinel_scribe.py", "--reflect"])
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(stdin_data))
+    monkeypatch.setenv("SENTINEL_CONFIG_DIR", config_dir)
+
+    reflect_called = {"called": False}
+
+    def mock_reflect(**kwargs):
+        reflect_called["called"] = True
+        assert kwargs["session_id"] == "test-session"
+        assert kwargs["transcript_path"] == str(transcript)
+
+    monkeypatch.setattr(sentinel_scribe, "reflect", mock_reflect)
+
+    with pytest.raises(SystemExit) as exc_info:
+        sentinel_scribe.main()
+    assert exc_info.value.code == 0
+    assert reflect_called["called"]

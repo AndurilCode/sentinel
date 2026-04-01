@@ -1366,51 +1366,29 @@ def main():
 
     log_model = _resolve_model(scribe_cfg, config, "extraction")
 
-    if "--observe" in sys.argv:
-        if not scribe_cfg.get("sources", {}).get("user_prompts", True):
-            log_ollama(config, "scribe", "observe", log_model, 0,
-                       error="source_disabled")
-            sys.exit(0)
+    if "--reflect" in sys.argv:
         try:
             raw_data = json.loads(sys.stdin.read())
         except Exception:
-            log_ollama(config, "scribe", "observe", log_model, 0,
+            log_ollama(config, "scribe", "reflect", log_model, 0,
                        error="stdin_parse_failed")
             sys.exit(0)
 
         session_id = raw_data.get("session_id", "unknown")
-        user_prompt = raw_data.get("prompt", "") or raw_data.get("user_prompt", "")
         transcript_path = raw_data.get("transcript_path", "")
-        if not user_prompt:
-            log_ollama(config, "scribe", "observe", log_model, 0,
-                       error="empty_prompt",
-                       response=f"keys={list(raw_data.keys())}")
+        if not transcript_path:
+            log_ollama(config, "scribe", "reflect", log_model, 0,
+                       error="no_transcript_path")
             sys.exit(0)
 
         session_d = _session_dir(session_id, config_dir)
-        observe(
-            user_prompt=user_prompt,
+        reflect(
             transcript_path=transcript_path,
             session_id=session_id,
             config=config,
             config_dir=config_dir,
             scribe_dir=scribe_d,
             session_dir=session_d,
-        )
-
-    elif "--flush" in sys.argv:
-        try:
-            raw_data = json.loads(sys.stdin.read())
-        except Exception:
-            raw_data = {}
-        session_id = raw_data.get("session_id", "unknown")
-        session_d = _session_dir(session_id, config_dir)
-        flush(
-            config=config,
-            config_dir=config_dir,
-            scribe_dir=scribe_d,
-            session_dir=session_d,
-            session_id=session_id,
         )
 
     elif "--learn" in sys.argv:
