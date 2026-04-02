@@ -2,42 +2,43 @@
 # Sentinel — configuration
 # ─────────────────────────────────────────────────────────────
 
-# Ollama model for rule evaluation.
-# Small models work because each rule is evaluated independently
-# as a binary classification task with constrained JSON output.
-#
-# Recommended (by hardware):
-#   8 GB RAM   → gemma3:4b        (default, ~3 GB at Q4)
-#   16 GB RAM  → gemma3:12b       (best accuracy for block rules)
-#
-# Any Ollama-compatible model works. Per-rule overrides via `model:` in rule files.
-model: "gemma3:4b"
+# LLM backend for rule evaluation: ollama, claude, or copilot.
+# Per-rule overrides via `backend:` in rule files.
+backend: "copilot"
 
-# Ollama endpoint
-ollama_url: "http://localhost:11434"
+# Default model (backend-specific).
+model: "gpt-5-mini"
+
+# Backend-specific settings
+backends:
+  ollama:
+    url: "http://localhost:11434"
+    model: "gemma3:4b"
+  copilot:
+    model: "gpt-5-mini"
+  # claude:
+  #   model: "haiku"
 
 # Per-rule evaluation timeout (ms). Rules that exceed this are skipped.
-timeout_ms: 5000
+timeout_ms: 30000
 
 # Minimum confidence to treat an LLM evaluation as a real violation.
 # Below this threshold the violation is discarded (avoids false positives).
 # Range: 0.0–1.0. Start conservative (0.7), tune down as you gain data.
 confidence_threshold: 0.7
 
-# Maximum concurrent Ollama calls.
+# Maximum concurrent LLM calls.
 # Each rule is one lightweight call (~100-150 output tokens).
-# Set to match your available inference bandwidth.
 max_parallel: 4
 
-# Actual concurrent Ollama HTTP calls (GPU-bound).
-# Separate from max_parallel which controls thread pool size.
+# Actual concurrent Ollama HTTP calls (GPU-bound, Ollama only).
 ollama_concurrency: 3
 
 # Use thinking mode (slower, more accurate) or disable (fast gate).
 # For hook evaluation, disabling thinking is almost always sufficient.
 think: false
 
-# Behavior when Ollama is unreachable or returns an error.
+# Behavior when the LLM backend is unreachable or returns an error.
 #   true  → skip the rule, allow the action (fail open)
 #   false → block the action (fail closed, strict mode)
 fail_open: true
@@ -61,7 +62,8 @@ rules_dir: "rules"
 # the transcript. Used by PostToolUse info rules with post: true.
 context:
   enabled: true
-  model: "gemma3:4b"
+  backend: "copilot"
+  model: "gpt-5-mini"
   min_events: 3
   lock_timeout_s: 30
   summary_max_words: 150
@@ -77,9 +79,9 @@ context:
 # Resolution order: scribe.<step>_model → scribe.model → top-level model
 scribe:
   enabled: true
-  # model: "gemma3:4b"             # default for all scribe steps
-  extraction_model: "gemma3:4b"    # override for extraction (reflect + learn)
-  synthesis_model: "gemma3:12b"    # override for validation+synthesis
+  backend: "copilot"
+  extraction_model: "gpt-5-mini"   # override for extraction (reflect + learn)
+  synthesis_model: "gpt-5-mini"    # override for validation+synthesis
   # extraction_timeout_ms: 15000   # timeout for extraction LLM calls
   # extraction_num_predict: 1000   # max output tokens for extraction
   # synthesis_timeout_ms: 15000    # timeout for validation+synthesis LLM calls
