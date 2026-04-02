@@ -12,35 +12,13 @@ exclude:
   - "docs/**"
   - "examples/**"
 prompt: |
-  DOMAIN KNOWLEDGE: Sentinel is distributed as a Claude Code plugin.
-  Version must be bumped in BOTH files when releasing meaningful changes:
-  - .claude-plugin/plugin.json ("version" field)
-  - .claude-plugin/marketplace.json ("version" field inside plugins[0])
-  Both versions must always match. Use semver:
-  - PATCH (x.y.Z): bug fixes, doc-only changes
-  - MINOR (x.Y.0): new features, new config keys, new rule fields
-  - MAJOR (X.0.0): breaking changes to rule format or hook contract
-
-  PAST PATTERN: Features were merged without bumping the version,
-  causing users to have stale plugin installs with no way to know
-  they're outdated.
-
   FILE: {{file_path}}
-  CONTENT (first chars): {{content_snippet}}
 
-  A releasable change includes: new features, bug fixes, config
-  corrections (e.g. fixing wrong timeout values, changing defaults),
-  schema changes, or any behavioral difference a user would notice
-  after updating. Changes to hooks.json ARE releasable — they ship
-  with the plugin and affect runtime behavior.
+  These files ship with the Sentinel Claude Code plugin.
+  Any change is a releasable change requiring a version bump.
 
-  Does this write look like a releasable change that requires a
-  version bump in .claude-plugin/plugin.json and marketplace.json?
-  If the file being written IS plugin.json or marketplace.json
-  (i.e. the version bump itself), this is NOT a violation.
+  NOT a violation if the file is .claude-plugin/plugin.json
+  or .claude-plugin/marketplace.json (that IS the bump).
 
-  NOT NEGOTIABLE:
-  - Skills are ALWAYS releasable since they are shipped with the plugin and affect runtime behavior.
-  - Hooks.json is ALWAYS releasable since they ship with the plugin and affect runtime behavior.
-
-  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}
+  Is this a releasable plugin file being modified?
+  Respond ONLY with JSON: {"violation": true/false, "confidence": 0.0-1.0, "reason": "MUST DO: bump version in .claude-plugin/plugin.json and .claude-plugin/marketplace.json since it is a releasable change in claude plugin"}

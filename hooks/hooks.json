@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel.py",
-            "timeout": 10000
+            "timeout": 30000
           }
         ]
       }
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel.py --post",
-            "timeout": 10000
+            "timeout": 30000
           }
         ]
       }
@@ -29,13 +29,13 @@
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel_context.py",
             "async": true,
-            "timeout": 60000
+            "timeout": 120000
           },
           {
             "type": "command",
             "command": "python3 ${CLAUDE_PLUGIN_ROOT}/sentinel_scribe.py --reflect",
             "async": true,
-            "timeout": 30000
+            "timeout": 120000
           }
         ]
       }
