@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
-from sentinel_log import log_ollama
+from sentinel_log import log_llm
 
 try:
     import yaml
@@ -770,7 +770,7 @@ def reflect(transcript_path: str, session_id: str,
     budget = scribe_cfg.get("transcript_budget_chars", 4000)
     transcript_text = read_compacted_transcript(transcript_path, budget_chars=budget)
     if not transcript_text.strip():
-        log_ollama(config, "scribe", "reflect", extraction_model, 0,
+        log_llm(config, "scribe", "reflect", extraction_model, 0,
                    response="empty_transcript")
         return
 
@@ -788,7 +788,7 @@ def reflect(transcript_path: str, session_id: str,
     os.makedirs(session_dir, exist_ok=True)
     fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
     if fd is None:
-        log_ollama(config, "scribe", "reflect_extraction", extraction_model, 0,
+        log_llm(config, "scribe", "reflect_extraction", extraction_model, 0,
                    error="lock_timeout")
         return
 
@@ -799,12 +799,12 @@ def reflect(transcript_path: str, session_id: str,
                               timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
                               num_predict=scribe_cfg.get("extraction_num_predict", 1000))
     except Exception as exc:
-        log_ollama(config, "scribe", "reflect_extraction", extraction_model,
+        log_llm(config, "scribe", "reflect_extraction", extraction_model,
                    (time.time() - t0) * 1000, error=str(exc))
         return
     finally:
         release_lock(fd)
-    log_ollama(config, "scribe", "reflect_extraction", extraction_model,
+    log_llm(config, "scribe", "reflect_extraction", extraction_model,
                (time.time() - t0) * 1000, response=response)
 
     conventions = parse_extraction_response(response)
@@ -847,7 +847,7 @@ def reflect(transcript_path: str, session_id: str,
 
         fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
         if fd2 is None:
-            log_ollama(config, "scribe", "reflect_validation", synthesis_model, 0,
+            log_llm(config, "scribe", "reflect_validation", synthesis_model, 0,
                        error="lock_timeout")
             continue
 
@@ -860,19 +860,19 @@ def reflect(transcript_path: str, session_id: str,
                 timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
                 num_predict=scribe_cfg.get("synthesis_num_predict", 1000))
         except Exception as exc:
-            log_ollama(config, "scribe", "reflect_validation", synthesis_model,
+            log_llm(config, "scribe", "reflect_validation", synthesis_model,
                        (time.time() - t1) * 1000, error=str(exc))
             continue
         finally:
             release_lock(fd2)
-        log_ollama(config, "scribe", "reflect_validation", synthesis_model,
+        log_llm(config, "scribe", "reflect_validation", synthesis_model,
                    (time.time() - t1) * 1000, response=val_response)
 
         result = parse_validation_response(val_response)
         if result is None:
             continue
         if result.get("redundant"):
-            log_ollama(config, "scribe", "reflect_validation", synthesis_model, 0,
+            log_llm(config, "scribe", "reflect_validation", synthesis_model, 0,
                        response=f"redundant: {result.get('reason', '')}")
             continue
 
@@ -998,7 +998,7 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
         for chunk in chunks:
             fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
             if fd is None:
-                log_ollama(config, "scribe", "learn_extraction", extraction_model, 0,
+                log_llm(config, "scribe", "learn_extraction", extraction_model, 0,
                            error="lock_timeout")
                 continue
             t0 = time.time()
@@ -1008,12 +1008,12 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                                       timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
                                       num_predict=scribe_cfg.get("extraction_num_predict", 1000))
             except Exception as exc:
-                log_ollama(config, "scribe", "learn_extraction", extraction_model,
+                log_llm(config, "scribe", "learn_extraction", extraction_model,
                            (time.time() - t0) * 1000, error=str(exc))
                 continue
             finally:
                 release_lock(fd)
-            log_ollama(config, "scribe", "learn_extraction", extraction_model,
+            log_llm(config, "scribe", "learn_extraction", extraction_model,
                        (time.time() - t0) * 1000, response=response)
 
             conventions = parse_extraction_response(response)
@@ -1049,7 +1049,7 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
 
                 fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
                 if fd2 is None:
-                    log_ollama(config, "scribe", "learn_synthesis", synthesis_model, 0,
+                    log_llm(config, "scribe", "learn_synthesis", synthesis_model, 0,
                                error="lock_timeout")
                     continue
                 t1 = time.time()
@@ -1061,12 +1061,12 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                         timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
                         num_predict=scribe_cfg.get("synthesis_num_predict", 1000))
                 except Exception as exc:
-                    log_ollama(config, "scribe", "learn_synthesis", synthesis_model,
+                    log_llm(config, "scribe", "learn_synthesis", synthesis_model,
                                (time.time() - t1) * 1000, error=str(exc))
                     continue
                 finally:
                     release_lock(fd2)
-                log_ollama(config, "scribe", "learn_synthesis", synthesis_model,
+                log_llm(config, "scribe", "learn_synthesis", synthesis_model,
                            (time.time() - t1) * 1000, response=synth_response)
 
                 rule = parse_synthesis_response(synth_response)
@@ -1109,14 +1109,14 @@ def main():
         try:
             raw_data = json.loads(sys.stdin.read())
         except Exception:
-            log_ollama(config, "scribe", "reflect", log_model, 0,
+            log_llm(config, "scribe", "reflect", log_model, 0,
                        error="stdin_parse_failed")
             sys.exit(0)
 
         session_id = raw_data.get("session_id", "unknown")
         transcript_path = raw_data.get("transcript_path", "")
         if not transcript_path:
-            log_ollama(config, "scribe", "reflect", log_model, 0,
+            log_llm(config, "scribe", "reflect", log_model, 0,
                        error="no_transcript_path")
             sys.exit(0)
 

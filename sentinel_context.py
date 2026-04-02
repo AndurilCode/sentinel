@@ -19,7 +19,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Optional
-from sentinel_log import log_ollama
+from sentinel_log import log_llm
 
 try:
     import yaml
@@ -267,7 +267,7 @@ def update_summary(transcript_path: str, session_dir: str,
     fd = acquire_lock(lock_path, LockPriority.P2_ACCUMULATOR,
                       timeout_s=lock_timeout)
     if fd is None:
-        log_ollama(config, "context", "accumulate", model, 0,
+        log_llm(config, "context", "accumulate", model, 0,
                    error="lock_timeout")
         return None  # timed out, skip this update
 
@@ -277,14 +277,14 @@ def update_summary(transcript_path: str, session_dir: str,
         content = call_ollama(prompt, model, config)
     except Exception as exc:
         elapsed = (time.time() - t0) * 1000
-        log_ollama(config, "context", "accumulate", model, elapsed,
+        log_llm(config, "context", "accumulate", model, elapsed,
                     error=str(exc))
         release_lock(fd)
         return None
     finally:
         release_lock(fd)
     elapsed = (time.time() - t0) * 1000
-    log_ollama(config, "context", "accumulate", model, elapsed,
+    log_llm(config, "context", "accumulate", model, elapsed,
                response=content)
 
     # Parse and write
