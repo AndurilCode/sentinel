@@ -21,7 +21,8 @@ except ImportError:
     yaml = None
 
 
-def load_entries(path):
+def _load_jsonl(path):
+    """Load a JSONL file, skipping blank lines and parse errors."""
     entries = []
     with open(path) as f:
         for line in f:
@@ -33,6 +34,10 @@ def load_entries(path):
             except json.JSONDecodeError:
                 continue
     return entries
+
+
+def load_entries(path):
+    return _load_jsonl(path)
 
 
 def _parse_ts(ts_str):
@@ -156,17 +161,7 @@ def compute_observation_stats(obs_path):
     if not os.path.exists(obs_path):
         return None
 
-    observations = []
-    with open(obs_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                observations.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-
+    observations = _load_jsonl(obs_path)
     if not observations:
         return None
 
@@ -192,17 +187,7 @@ def compute_dismissal_stats(dis_path):
     if not os.path.exists(dis_path):
         return None
 
-    dismissals = []
-    with open(dis_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                dismissals.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-
+    dismissals = _load_jsonl(dis_path)
     if not dismissals:
         return None
 
@@ -395,7 +380,7 @@ def compute_stats(entries):
         },
         "scribe": None,
         "health": {
-            "issues": [],
+            "issues": compute_health_issues(rules),
             "near_misses": {
                 "total": near_miss_total,
                 "by_rule": dict(near_misses),
@@ -403,6 +388,32 @@ def compute_stats(entries):
             "contested_targets": contested_targets,
         },
     }
+
+
+def compute_health_issues(rules):
+    """Detect noisy, flaky, and slow rules. Returns list of issue dicts."""
+    issues = []
+    for rid, r in sorted(rules.items()):
+        if r["blocks"] == 0:
+            continue
+        override_rate = r["contested"] / r["blocks"] if r["blocks"] else 0
+        if override_rate >= 0.3:
+            issues.append({
+                "kind": "noisy", "rule_id": rid,
+                "detail": (f"{r['contested']}/{r['blocks']} blocks contested "
+                           f"(override rate: {override_rate:.0%})"),
+            })
+        elif r["skipped"] > r["evals"] * 0.3 and r["evals"] > 0:
+            issues.append({
+                "kind": "flaky", "rule_id": rid,
+                "detail": f"{r['skipped']} skipped / {r['evals']} evals",
+            })
+        elif r["max_ms"] > 3000:
+            issues.append({
+                "kind": "slow", "rule_id": rid,
+                "detail": f"max {r['max_ms']}ms",
+            })
+    return issues
 
 
 def fmt_bar(count, total, width=20):
@@ -553,18 +564,8 @@ def print_report(stats):
     print("  HEALTH")
     print("\u2500" * 55)
 
-    # Rule Health (existing logic)
-    issues = []
-    for rid, r in sorted(ev["rules"].items()):
-        if r["blocks"] == 0:
-            continue
-        override_rate = r["contested"] / r["blocks"] if r["blocks"] else 0
-        if override_rate >= 0.3:
-            issues.append(("noisy", rid, r, override_rate))
-        elif r["skipped"] > r["evals"] * 0.3 and r["evals"] > 0:
-            issues.append(("flaky", rid, r, 0))
-        elif r["max_ms"] > 3000:
-            issues.append(("slow", rid, r, 0))
+    # Rule Health
+    issues = health["issues"]
 
     if not issues:
         print()
@@ -572,12 +573,13 @@ def print_report(stats):
     else:
         print()
         print("  Rule Health")
-        for kind, rid, r, rate in issues:
+        for issue in issues:
+            kind = issue["kind"]
+            rid = issue["rule_id"]
             print()
             if kind == "noisy":
                 print(f"  !! {rid}  \u2014 likely false positives")
-                print(f"     {r['contested']}/{r['blocks']} blocks contested "
-                      f"(override rate: {rate:.0%})")
+                print(f"     {issue['detail']}")
                 rule_targets = {
                     t: c for key, c in health["contested_targets"].items()
                     for t in [key.split(":", 1)[1]] if key.startswith(rid + ":")
@@ -591,12 +593,13 @@ def print_report(stats):
                     print("     Suggested fix: add these to the rule's "
                           "exclude list, or switch to severity: warn")
             elif kind == "flaky":
-                print(f"  ?? {rid}  \u2014 unreliable "
-                      f"({r['skipped']} skipped / {r['evals']} evals)")
+                print(f"  ?? {rid}  \u2014 unreliable")
+                print(f"     {issue['detail']}")
                 print("     Suggested fix: check Ollama stability or "
                       "increase timeout_ms for this rule")
             elif kind == "slow":
-                print(f"  ~~ {rid}  \u2014 slow (max {r['max_ms']}ms)")
+                print(f"  ~~ {rid}  \u2014 slow")
+                print(f"     {issue['detail']}")
                 print("     Suggested fix: use a smaller model or "
                       "narrow the scope to reduce evaluations")
 
