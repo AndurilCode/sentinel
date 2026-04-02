@@ -172,5 +172,43 @@ class TestCallLlmClaude(unittest.TestCase):
                 call_llm("prompt", "system", "haiku", "claude", config)
 
 
+class TestCallLlmCopilot(unittest.TestCase):
+    def test_call_llm_copilot(self):
+        """Copilot backend runs copilot CLI with correct args."""
+        mock_result = MagicMock()
+        mock_result.stdout = '{"violation": false, "confidence": 0.7, "reason": "ok"}'
+        mock_result.returncode = 0
+
+        config = {"timeout_ms": 10000, "backends": {"copilot": {"model": "gpt-5-mini"}}}
+
+        with patch("sentinel_backends.subprocess.run", return_value=mock_result) as mock_run:
+            result = call_llm("test prompt", "system prompt", "gpt-5-mini", "copilot", config)
+
+        self.assertIn("violation", result)
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("copilot", cmd)
+        self.assertIn("-p", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("gpt-5-mini", cmd)
+        self.assertIn("--output-format", cmd)
+
+    def test_call_llm_copilot_prepends_system_prompt(self):
+        """Copilot has no --system-prompt flag, so system prompt is prepended to user prompt."""
+        mock_result = MagicMock()
+        mock_result.stdout = '{"violation": false}'
+        mock_result.returncode = 0
+
+        config = {"timeout_ms": 5000, "backends": {}}
+
+        with patch("sentinel_backends.subprocess.run", return_value=mock_result) as mock_run:
+            call_llm("user prompt", "system instructions", "gpt-5-mini", "copilot", config)
+
+        cmd = mock_run.call_args[0][0]
+        p_idx = cmd.index("-p")
+        combined_prompt = cmd[p_idx + 1]
+        self.assertIn("system instructions", combined_prompt)
+        self.assertIn("user prompt", combined_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

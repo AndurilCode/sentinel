@@ -84,7 +84,9 @@ def call_llm(
         return _call_ollama(prompt, system_prompt, model, config, **kwargs)
     if backend == "claude":
         return _call_claude(prompt, system_prompt, model, config, **kwargs)
-    raise ValueError(f"Unknown backend: {backend!r}. Supported: 'ollama', 'claude'")
+    if backend == "copilot":
+        return _call_copilot(prompt, system_prompt, model, config, **kwargs)
+    raise ValueError(f"Unknown backend: {backend!r}. Supported: 'ollama', 'claude', 'copilot'")
 
 
 # ── Claude CLI backend ────────────────────────────────────────────────────
@@ -118,6 +120,38 @@ def _call_claude(
         "--print",
         "--system-prompt", system_prompt,
         "--no-session-persistence",
+    ]
+
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout_s,
+    )
+    return result.stdout
+
+
+# ── Copilot CLI backend ───────────────────────────────────────────────────
+
+def _call_copilot(
+    prompt: str,
+    system_prompt: str,
+    model: str,
+    config: dict,
+    **kwargs,
+) -> str:
+    """Run copilot CLI in prompt mode and return stdout.
+
+    Copilot has no --system-prompt flag, so we prepend the system prompt
+    to the user prompt.
+    """
+    timeout_ms = kwargs.get("timeout_ms") or config.get("timeout_ms", 5000)
+    timeout_s = timeout_ms / 1000
+
+    combined_prompt = f"{system_prompt}\n\n{prompt}"
+
+    cmd = [
+        "copilot", "-p", combined_prompt,
+        "--model", model,
+        "--output-format", "text",
+        "--allow-all-tools",
     ]
 
     result = subprocess.run(
