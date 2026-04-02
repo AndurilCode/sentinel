@@ -172,53 +172,5 @@ class TestCallLlmClaude(unittest.TestCase):
                 call_llm("prompt", "system", "haiku", "claude", config)
 
 
-# Pytest-style versions of the same tests (as specified in task)
-
-def test_call_llm_claude():
-    """Claude backend runs claude CLI with correct args."""
-    mock_result = MagicMock()
-    mock_result.stdout = '{"violation": false, "confidence": 0.8, "reason": "ok"}'
-    mock_result.returncode = 0
-
-    config = {
-        "timeout_ms": 10000,
-        "backends": {"claude": {"model": "haiku"}},
-    }
-
-    with patch("sentinel_backends.subprocess.run", return_value=mock_result) as mock_run:
-        result = call_llm("test prompt", "system prompt", "haiku", "claude", config)
-
-    assert "violation" in result
-    args = mock_run.call_args
-    cmd = args[0][0]
-    assert "claude" in cmd
-    assert "-p" in cmd
-    assert "--print" in cmd
-    assert "--model" in cmd
-    assert "haiku" in cmd
-    assert "--system-prompt" in cmd
-    assert "--no-session-persistence" in cmd
-
-
-def test_call_llm_claude_timeout():
-    """Claude backend raises on subprocess timeout."""
-    config = {"timeout_ms": 5000, "backends": {}}
-
-    with patch("sentinel_backends.subprocess.run",
-               side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=5)):
-        with pytest.raises(subprocess.TimeoutExpired):
-            call_llm("prompt", "system", "haiku", "claude", config)
-
-
-def test_call_llm_claude_not_found():
-    """Claude backend raises when binary not on PATH."""
-    config = {"timeout_ms": 5000, "backends": {}}
-
-    with patch("sentinel_backends.subprocess.run",
-               side_effect=FileNotFoundError("claude not found")):
-        with pytest.raises(FileNotFoundError):
-            call_llm("prompt", "system", "haiku", "claude", config)
-
-
 if __name__ == "__main__":
     unittest.main()
