@@ -10,8 +10,6 @@ Currently supports the "ollama" backend. Claude and Copilot backends will be
 added in subsequent tasks.
 """
 import json
-import subprocess
-import shutil
 import threading
 import urllib.request
 from typing import Optional
