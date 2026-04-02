@@ -261,13 +261,13 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None, num_predict=None):
+    def mock_ollama(prompt, system_prompt, model, backend, cfg, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
         return synthesis_response
 
-    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+    with patch.object(sentinel_scribe, "call_llm", side_effect=mock_ollama):
         with patch("sentinel_lock.acquire_lock", return_value=99):
             with patch("sentinel_lock.release_lock"):
                 result = sentinel_scribe.learn(
@@ -533,13 +533,13 @@ prompt: |
 """
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None, num_predict=None):
+    def mock_ollama(prompt, system_prompt, model, backend, cfg, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
         return validation_response
 
-    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+    with patch.object(sentinel_scribe, "call_llm", side_effect=mock_ollama):
         with patch("sentinel_lock.acquire_lock", return_value=99):
             with patch("sentinel_lock.release_lock"):
                 sentinel_scribe.reflect(
@@ -601,13 +601,13 @@ def test_reflect_skips_redundant_conventions(tmp_path, config_dir):
     validation_response = '{"redundant": true, "reason": "Covered by existing no-eval rule"}'
 
     call_count = {"n": 0}
-    def mock_ollama(prompt, model, cfg, json_format=True, think=False, timeout_ms=None, num_predict=None):
+    def mock_ollama(prompt, system_prompt, model, backend, cfg, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return extraction_response
         return validation_response
 
-    with patch.object(sentinel_scribe, "call_ollama", side_effect=mock_ollama):
+    with patch.object(sentinel_scribe, "call_llm", side_effect=mock_ollama):
         with patch("sentinel_lock.acquire_lock", return_value=99):
             with patch("sentinel_lock.release_lock"):
                 sentinel_scribe.reflect(
@@ -644,7 +644,7 @@ def test_reflect_no_conventions(tmp_path, config_dir):
     session_dir = str(tmp_path / "sessions" / "test")
     os.makedirs(session_dir, exist_ok=True)
 
-    with patch.object(sentinel_scribe, "call_ollama", return_value='{"conventions": []}'):
+    with patch.object(sentinel_scribe, "call_llm", return_value='{"conventions": []}'):
         with patch("sentinel_lock.acquire_lock", return_value=99):
             with patch("sentinel_lock.release_lock"):
                 sentinel_scribe.reflect(

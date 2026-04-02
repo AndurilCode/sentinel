@@ -25,6 +25,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
 from sentinel_log import log_llm
+from sentinel_backends import call_llm, resolve_backend
 
 try:
     import yaml
@@ -373,48 +374,6 @@ def build_transcript_extraction_prompt(transcript_text: str,
     )
 
 
-# ── Ollama integration ──────────────────────────────────────────────
-
-def call_ollama(prompt: str, model: str, config: dict,
-                json_format: bool = True, think: bool = False,
-                timeout_ms: Optional[int] = None,
-                num_predict: Optional[int] = None) -> str:
-    """Call Ollama chat endpoint. Returns response content string.
-
-    json_format=True forces JSON output (for extraction). Set to False for
-    synthesis which returns YAML.
-    think=True enables /think mode (requires Ollama + model support).
-    timeout_ms overrides the default config timeout.
-    """
-    system_msg = ("You are a JSON-only responder. Always respond with valid JSON, no other text."
-                  if json_format else
-                  "You are a YAML-only responder. Always respond with valid YAML, no other text.")
-    payload_dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "think": think,
-        "options": {
-            "num_predict": num_predict or (1000 if (not json_format or think) else 300),
-            "temperature": config.get("scribe", {}).get("temperature", 0.1),
-        },
-    }
-    if json_format:
-        payload_dict["format"] = "json"
-    payload = json.dumps(payload_dict).encode()
-
-    url = f"{config.get('ollama_url', 'http://localhost:11434')}/api/chat"
-    effective_timeout = (timeout_ms or config.get("timeout_ms", 5000)) / 1000
-
-    req = urllib.request.Request(url, data=payload,
-                                headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
-        body = json.loads(resp.read())
-    return body.get("message", {}).get("content", "")
-
 
 _VALID_TRIGGERS = {"file_write", "bash", "mcp", "unknown"}
 
@@ -760,6 +719,7 @@ def reflect(transcript_path: str, session_id: str,
     from sentinel_lock import acquire_lock, release_lock, LockPriority
 
     scribe_cfg = config.get("scribe", SCRIBE_DEFAULTS)
+    backend, _ = resolve_backend(config, override_backend=scribe_cfg.get("backend"))
     extraction_model = _resolve_model(scribe_cfg, config, "extraction")
     synthesis_model = _resolve_model(scribe_cfg, config, "synthesis")
     guidance = scribe_cfg.get("guidance")
@@ -771,7 +731,7 @@ def reflect(transcript_path: str, session_id: str,
     transcript_text = read_compacted_transcript(transcript_path, budget_chars=budget)
     if not transcript_text.strip():
         log_llm(config, "scribe", "reflect", extraction_model, 0,
-                   response="empty_transcript")
+                   backend=backend, response="empty_transcript")
         return
 
     # 2. Load session summary (optional context)
@@ -786,26 +746,32 @@ def reflect(transcript_path: str, session_id: str,
     # 3. Phase 1: Extraction
     lock_path = os.path.join(session_dir, "ollama.lock")
     os.makedirs(session_dir, exist_ok=True)
-    fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
-    if fd is None:
-        log_llm(config, "scribe", "reflect_extraction", extraction_model, 0,
-                   error="lock_timeout")
-        return
+    fd = None
+    if backend == "ollama":
+        fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+        if fd is None:
+            log_llm(config, "scribe", "reflect_extraction", extraction_model, 0,
+                       backend=backend, error="lock_timeout")
+            return
 
     t0 = time.time()
     try:
         prompt = build_transcript_extraction_prompt(transcript_text, summary, guidance)
-        response = call_ollama(prompt, extraction_model, config, think=False,
-                              timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
-                              num_predict=scribe_cfg.get("extraction_num_predict", 1000))
+        response = call_llm(prompt,
+                            "You are a JSON-only responder. Always respond with valid JSON, no other text.",
+                            extraction_model, backend, config,
+                            think=False,
+                            timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
+                            num_predict=scribe_cfg.get("extraction_num_predict", 1000))
     except Exception as exc:
         log_llm(config, "scribe", "reflect_extraction", extraction_model,
-                   (time.time() - t0) * 1000, error=str(exc))
+                   (time.time() - t0) * 1000, backend=backend, error=str(exc))
         return
     finally:
-        release_lock(fd)
+        if fd is not None:
+            release_lock(fd)
     log_llm(config, "scribe", "reflect_extraction", extraction_model,
-               (time.time() - t0) * 1000, response=response)
+               (time.time() - t0) * 1000, backend=backend, response=response)
 
     conventions = parse_extraction_response(response)
     if not conventions:
@@ -845,35 +811,40 @@ def reflect(transcript_path: str, session_id: str,
         scope_hint = conv.get("scope_hint", "**")
         matched_files = _glob_repo_files(scope_hint, project_root)
 
-        fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
-        if fd2 is None:
-            log_llm(config, "scribe", "reflect_validation", synthesis_model, 0,
-                       error="lock_timeout")
-            continue
+        fd2 = None
+        if backend == "ollama":
+            fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+            if fd2 is None:
+                log_llm(config, "scribe", "reflect_validation", synthesis_model, 0,
+                           backend=backend, error="lock_timeout")
+                continue
 
         t1 = time.time()
         try:
             val_prompt = build_validation_prompt(conv, active_rules, matched_files)
-            val_response = call_ollama(
-                val_prompt, synthesis_model, config, json_format=False,
+            val_response = call_llm(
+                val_prompt,
+                "You are a YAML-only responder. Always respond with valid YAML, no other text.",
+                synthesis_model, backend, config,
                 think=scribe_cfg.get("think", False),
                 timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
                 num_predict=scribe_cfg.get("synthesis_num_predict", 1000))
         except Exception as exc:
             log_llm(config, "scribe", "reflect_validation", synthesis_model,
-                       (time.time() - t1) * 1000, error=str(exc))
+                       (time.time() - t1) * 1000, backend=backend, error=str(exc))
             continue
         finally:
-            release_lock(fd2)
+            if fd2 is not None:
+                release_lock(fd2)
         log_llm(config, "scribe", "reflect_validation", synthesis_model,
-                   (time.time() - t1) * 1000, response=val_response)
+                   (time.time() - t1) * 1000, backend=backend, response=val_response)
 
         result = parse_validation_response(val_response)
         if result is None:
             continue
         if result.get("redundant"):
             log_llm(config, "scribe", "reflect_validation", synthesis_model, 0,
-                       response=f"redundant: {result.get('reason', '')}")
+                       backend=backend, response=f"redundant: {result.get('reason', '')}")
             continue
 
         rule = result.get("rule", {})
@@ -964,6 +935,7 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
     from sentinel_lock import acquire_lock, release_lock, LockPriority
 
     scribe_cfg = config.get("scribe", SCRIBE_DEFAULTS)
+    backend, _ = resolve_backend(config, override_backend=scribe_cfg.get("backend"))
     extraction_model = _resolve_model(scribe_cfg, config, "extraction")
     synthesis_model = _resolve_model(scribe_cfg, config, "synthesis")
     guidance = scribe_cfg.get("guidance")
@@ -996,25 +968,31 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
         chunks = [content[i:i + max_chunk] for i in range(0, len(content), max_chunk)]
 
         for chunk in chunks:
-            fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
-            if fd is None:
-                log_llm(config, "scribe", "learn_extraction", extraction_model, 0,
-                           error="lock_timeout")
-                continue
+            fd = None
+            if backend == "ollama":
+                fd = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+                if fd is None:
+                    log_llm(config, "scribe", "learn_extraction", extraction_model, 0,
+                               backend=backend, error="lock_timeout")
+                    continue
             t0 = time.time()
             try:
                 prompt = build_doc_extraction_prompt(chunk, source_type, guidance)
-                response = call_ollama(prompt, extraction_model, config, think=False,
-                                      timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
-                                      num_predict=scribe_cfg.get("extraction_num_predict", 1000))
+                response = call_llm(prompt,
+                                    "You are a JSON-only responder. Always respond with valid JSON, no other text.",
+                                    extraction_model, backend, config,
+                                    think=False,
+                                    timeout_ms=scribe_cfg.get("extraction_timeout_ms", 15000),
+                                    num_predict=scribe_cfg.get("extraction_num_predict", 1000))
             except Exception as exc:
                 log_llm(config, "scribe", "learn_extraction", extraction_model,
-                           (time.time() - t0) * 1000, error=str(exc))
+                           (time.time() - t0) * 1000, backend=backend, error=str(exc))
                 continue
             finally:
-                release_lock(fd)
+                if fd is not None:
+                    release_lock(fd)
             log_llm(config, "scribe", "learn_extraction", extraction_model,
-                       (time.time() - t0) * 1000, response=response)
+                       (time.time() - t0) * 1000, backend=backend, response=response)
 
             conventions = parse_extraction_response(response)
             for conv in conventions:
@@ -1047,27 +1025,32 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                 active_rules = load_active_rules(rules_dir)
                 sample_rules = active_rules[:3]
 
-                fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
-                if fd2 is None:
-                    log_llm(config, "scribe", "learn_synthesis", synthesis_model, 0,
-                               error="lock_timeout")
-                    continue
+                fd2 = None
+                if backend == "ollama":
+                    fd2 = acquire_lock(lock_path, LockPriority.P3_SCRIBE)
+                    if fd2 is None:
+                        log_llm(config, "scribe", "learn_synthesis", synthesis_model, 0,
+                                   backend=backend, error="lock_timeout")
+                        continue
                 t1 = time.time()
                 try:
                     synth_prompt = build_synthesis_prompt(conv, matched_files, sample_rules)
-                    synth_response = call_ollama(
-                        synth_prompt, synthesis_model, config, json_format=False,
+                    synth_response = call_llm(
+                        synth_prompt,
+                        "You are a YAML-only responder. Always respond with valid YAML, no other text.",
+                        synthesis_model, backend, config,
                         think=scribe_cfg.get("think", False),
                         timeout_ms=scribe_cfg.get("synthesis_timeout_ms", 15000),
                         num_predict=scribe_cfg.get("synthesis_num_predict", 1000))
                 except Exception as exc:
                     log_llm(config, "scribe", "learn_synthesis", synthesis_model,
-                               (time.time() - t1) * 1000, error=str(exc))
+                               (time.time() - t1) * 1000, backend=backend, error=str(exc))
                     continue
                 finally:
-                    release_lock(fd2)
+                    if fd2 is not None:
+                        release_lock(fd2)
                 log_llm(config, "scribe", "learn_synthesis", synthesis_model,
-                           (time.time() - t1) * 1000, response=synth_response)
+                           (time.time() - t1) * 1000, backend=backend, response=synth_response)
 
                 rule = parse_synthesis_response(synth_response)
                 if rule and rule.get("prompt"):
@@ -1104,20 +1087,21 @@ def main():
     scribe_d = _scribe_dir(config_dir)
 
     log_model = _resolve_model(scribe_cfg, config, "extraction")
+    log_backend, _ = resolve_backend(config, override_backend=scribe_cfg.get("backend"))
 
     if "--reflect" in sys.argv:
         try:
             raw_data = json.loads(sys.stdin.read())
         except Exception:
             log_llm(config, "scribe", "reflect", log_model, 0,
-                       error="stdin_parse_failed")
+                       backend=log_backend, error="stdin_parse_failed")
             sys.exit(0)
 
         session_id = raw_data.get("session_id", "unknown")
         transcript_path = raw_data.get("transcript_path", "")
         if not transcript_path:
             log_llm(config, "scribe", "reflect", log_model, 0,
-                       error="no_transcript_path")
+                       backend=log_backend, error="no_transcript_path")
             sys.exit(0)
 
         session_d = _session_dir(session_id, config_dir)
