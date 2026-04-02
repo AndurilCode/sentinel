@@ -16,10 +16,10 @@ import json
 import ast
 import re
 import time
-import urllib.request
 from pathlib import Path
 from typing import Optional
 from sentinel_log import log_llm
+from sentinel_backends import call_llm, resolve_backend
 
 try:
     import yaml
@@ -206,27 +206,6 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def call_ollama(prompt: str, model: str, config: dict) -> str:
-    """Call Ollama chat endpoint."""
-    payload = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a JSON-only responder. Always respond with valid JSON, no other text."},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "options": {"temperature": 0.1, "num_predict": 300},
-    }).encode()
-
-    url = f"{config.get('ollama_url', 'http://localhost:11434')}/api/chat"
-    timeout_s = config.get("timeout_ms", 10000) / 1000
-
-    req = urllib.request.Request(url, data=payload,
-                                headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        body = json.loads(resp.read())
-    return body.get("message", {}).get("content", "")
-
 
 def update_summary(transcript_path: str, session_dir: str,
                    config: dict) -> Optional[dict]:
@@ -234,7 +213,11 @@ def update_summary(transcript_path: str, session_dir: str,
     ctx_config = config.get("context", {})
     min_events = ctx_config.get("min_events", 3)
     max_words = ctx_config.get("summary_max_words", 150)
-    model = ctx_config.get("model", config.get("model", "gemma3:4b"))
+    backend, model = resolve_backend(
+        config,
+        override_backend=ctx_config.get("backend"),
+        override_model=ctx_config.get("model"),
+    )
     lock_timeout = ctx_config.get("lock_timeout_s", 30)
 
     os.makedirs(session_dir, exist_ok=True)
@@ -263,29 +246,34 @@ def update_summary(transcript_path: str, session_dir: str,
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
-    # Wait for GPU lock
-    fd = acquire_lock(lock_path, LockPriority.P2_ACCUMULATOR,
-                      timeout_s=lock_timeout)
-    if fd is None:
-        log_llm(config, "context", "accumulate", model, 0,
-                   error="lock_timeout")
-        return None  # timed out, skip this update
+    # Wait for GPU lock (Ollama only — cloud backends don't share a GPU)
+    fd = None
+    if backend == "ollama":
+        fd = acquire_lock(lock_path, LockPriority.P2_ACCUMULATOR,
+                          timeout_s=lock_timeout)
+        if fd is None:
+            log_llm(config, "context", "accumulate", model, 0,
+                     backend=backend, error="lock_timeout")
+            return None  # timed out, skip this update
 
     t0 = time.time()
     try:
         prompt = build_accumulator_prompt(existing, events, max_words)
-        content = call_ollama(prompt, model, config)
+        content = call_llm(prompt, "You are a JSON-only responder. Always respond with valid JSON, no other text.",
+                           model, backend, config)
     except Exception as exc:
         elapsed = (time.time() - t0) * 1000
         log_llm(config, "context", "accumulate", model, elapsed,
-                    error=str(exc))
-        release_lock(fd)
+                    backend=backend, error=str(exc))
+        if fd is not None:
+            release_lock(fd)
         return None
     finally:
-        release_lock(fd)
+        if fd is not None:
+            release_lock(fd)
     elapsed = (time.time() - t0) * 1000
     log_llm(config, "context", "accumulate", model, elapsed,
-               response=content)
+               backend=backend, response=content)
 
     # Parse and write
     summary = extract_json(content)
