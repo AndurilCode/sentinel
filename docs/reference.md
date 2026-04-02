@@ -3,8 +3,8 @@
 ## Architecture
 
 ```
-Agent (Claude Code,                  Sentinel                          Ollama
- Copilot, Cursor,                        │                                │
+Agent (Claude Code,                  Sentinel                     LLM Backend
+ Copilot, Cursor,                        │                    (Ollama / Claude / Copilot)
  Windsurf, Cline,                        │                                │
  Amazon Q, ...)                          │                                │
     │                                    │                                │
@@ -18,9 +18,9 @@ Agent (Claude Code,                  Sentinel                          Ollama
     │                                    │                                │
     │                                    │  5. Parallel evaluation ──────>│
     │                                    │     (one call per rule)        │
-    │                                    │     ┌─ rule A ───> gemma3:4b │
-    │                                    │     ├─ rule B ───> gemma3:4b │
-    │                                    │     └─ rule C ───> gemma3:12b │ (per-rule override)
+    │                                    │     ┌─ rule A ───> ollama     │
+    │                                    │     ├─ rule B ───> ollama     │
+    │                                    │     └─ rule C ───> claude     │ (per-rule override)
     │                                    │                                │
     │                                    │  6. Collect results            │
     │                                    │     violations only            │
@@ -45,7 +45,9 @@ Agent (Claude Code,                  Sentinel                          Ollama
 
 **Silent on pass.** Sentinel only produces output on violations. The agent doesn't know Sentinel exists unless it violates a rule.
 
-**Fail open by default.** If Ollama is down or a rule evaluation errors, Sentinel allows the action. Set `fail_open: false` for strict mode.
+**Pluggable LLM backends.** Sentinel supports Ollama (local HTTP), Claude Code CLI, and Copilot CLI as evaluation backends. Selectable globally via `backend:` or per-rule. Ollama uses GPU semaphore gating; CLI backends use subprocess calls.
+
+**Fail open by default.** If the LLM backend is unreachable or a rule evaluation errors, Sentinel allows the action. Set `fail_open: false` for strict mode.
 
 **Parallel execution.** All matching rules evaluate concurrently via ThreadPoolExecutor.
 
@@ -63,6 +65,7 @@ scope:                           # glob patterns — rule fires if any match
   - "**/payments/*.ts"
 exclude:                         # glob patterns — exempt even if scope matches
   - "**/*.test.ts"
+backend: "claude"               # optional per-rule backend override (ollama|claude|copilot)
 model: "gemma3:12b"             # optional per-rule model override
 prompt: |                        # evaluation prompt with {{template_vars}}
   CONTEXT: {{action_summary}}
@@ -88,7 +91,7 @@ prompt: |
   Changes require review from @payments-team. Slack: #payments-eng
 ```
 
-**PostToolUse synthesized** — Add `post: true` to the rule. After the tool executes, `sentinel.py --post` reads the session context summary and the tool's output, calls Ollama with the rule's domain-knowledge prompt, and returns `additionalContext`. The expected prompt response format is `{"context": "your message (max 80 words)"}`.
+**PostToolUse synthesized** — Add `post: true` to the rule. After the tool executes, `sentinel.py --post` reads the session context summary and the tool's output, calls the configured LLM backend with the rule's domain-knowledge prompt, and returns `additionalContext`. The expected prompt response format is `{"context": "your message (max 80 words)"}`.
 
 ```yaml
 id: migration-awareness
@@ -135,11 +138,15 @@ prompt: |
 
 | Key | Default | Description |
 |---|---|---|
-| `model` | `gemma3:4b` | Ollama model for evaluation |
-| `ollama_url` | `http://localhost:11434` | Ollama endpoint |
+| `backend` | `ollama` | LLM backend: `ollama`, `claude`, or `copilot` |
+| `model` | `gemma3:4b` | Default model for evaluation (backend-specific) |
+| `backends.ollama.url` | `http://localhost:11434` | Ollama endpoint |
+| `backends.ollama.model` | *(top-level model)* | Default Ollama model |
+| `backends.claude.model` | `haiku` | Default Claude model |
+| `backends.copilot.model` | `gpt-5-mini` | Default Copilot model |
 | `timeout_ms` | `5000` | Per-rule evaluation timeout |
 | `confidence_threshold` | `0.7` | Minimum confidence to count as violation |
-| `max_parallel` | `4` | Concurrent Ollama calls |
+| `max_parallel` | `4` | Concurrent LLM calls |
 | `ollama_concurrency` | `1` | Max concurrent Ollama HTTP calls (GPU-bound) |
 | `think` | `false` | Enable thinking mode (slower, more accurate) |
 | `fail_open` | `true` | Skip rule on error vs block |
@@ -150,10 +157,13 @@ prompt: |
 | `mcp_prefix` | `mcp__` | Prefix for detecting MCP tool names |
 | `mcp_separator` | `__` | Separator for parsing MCP server/tool from tool name |
 | `context.enabled` | `true` | Enable session context accumulator |
-| `context.model` | `gemma3:4b` | Ollama model for accumulator (can differ from judge model) |
+| `context.backend` | *(top-level backend)* | LLM backend for accumulator |
+| `context.model` | `gemma3:4b` | Model for accumulator (can differ from judge model) |
 | `context.min_events` | `3` | Minimum new events before accumulator updates the summary |
-| `context.lock_timeout_s` | `30` | Max seconds to wait for GPU lock before skipping update |
+| `context.lock_timeout_s` | `30` | Max seconds to wait for GPU lock (Ollama only) |
 | `context.summary_max_words` | `150` | Token budget for rolling session summary |
+
+Backward compatibility: if the `backends` key is absent, `model` and `ollama_url` at the top level still work. If `backend` is absent, defaults to `ollama`.
 
 ### Multi-agent tool mapping
 
@@ -199,7 +209,8 @@ Each evaluation appends one JSONL line:
   "confidence": 0.92,
   "reason": "File is in the protected billing directory",
   "elapsed_ms": 47,
-  "model": "gemma3:4b"
+  "model": "gemma3:4b",
+  "backend": "ollama"
 }
 ```
 
@@ -207,13 +218,13 @@ Each evaluation appends one JSONL line:
 
 `sentinel_context.py` maintains a rolling summary of the agent's session for use by PostToolUse `info` rules. It runs on the `Stop` hook, async and non-blocking, so it never delays the agent.
 
-On each `Stop` event it reads new transcript entries since the last checkpoint, compacts them (stripping meta-tools and raw payloads), and calls Ollama to produce an updated summary. The summary is written to `.sentinel/sessions/<session_id>/summary.json` and consumed by `sentinel.py --post` when evaluating `post: true` info rules.
+On each `Stop` event it reads new transcript entries since the last checkpoint, compacts them (stripping meta-tools and raw payloads), and calls the configured LLM backend to produce an updated summary. The summary is written to `.sentinel/sessions/<session_id>/summary.json` and consumed by `sentinel.py --post` when evaluating `post: true` info rules.
 
 If the summary doesn't exist yet (early in a session), the synthesizer runs using the rule's domain knowledge alone.
 
-### GPU coordination
+### GPU coordination (Ollama only)
 
-Three consumers share a single flock-based lockfile (`.sentinel/sessions/<session_id>/ollama.lock`):
+When using the Ollama backend, three consumers share a single flock-based lockfile (`.sentinel/sessions/<session_id>/ollama.lock`):
 
 | Consumer | Priority | Lock behavior |
 |---|---|---|
@@ -222,6 +233,8 @@ Three consumers share a single flock-based lockfile (`.sentinel/sessions/<sessio
 | Accumulator | P2 | Blocks up to 30 s, skips on timeout (catches up next Stop) |
 
 The judge is on the critical path and must never wait. The synthesizer is advisory but synchronous — a brief wait is acceptable. The accumulator is async and eventually consistent.
+
+Claude and Copilot backends skip lock acquisition entirely — they don't share a local GPU.
 
 ## Writing effective rules
 

@@ -24,6 +24,7 @@ scope:                           # glob patterns — rule fires if any match
   - "src/core/billing/**"
 exclude:                         # glob patterns — exempt even if scope matches
   - "**/*.test.ts"
+backend: "claude"               # optional per-rule backend override (ollama|claude|copilot)
 model: "gemma3:12b"             # optional per-rule model override
 post: true                       # (info only) opt-in to PostToolUse LLM synthesis
 prompt: |                        # evaluation prompt with {{template_vars}}
@@ -129,7 +130,7 @@ Ask 2-4 targeted follow-up questions, one at a time. Focus on:
 - **Excludes** — any exceptions? (test files, specific directories, dry-run commands)
 - **Severity** — should violations block the action, warn, or just provide context? Recommend starting with `warn`. Use `info` for ownership info, related-file reminders, or policy awareness that should never block.
 
-Do not ask about prompt template details. Keep it focused. If the user picks `severity: block` and the rule evaluates content semantically (not just file paths), recommend adding `model: "gemma3:12b"` for better accuracy and explain the speed tradeoff (~2x latency).
+Do not ask about prompt template details. Keep it focused. If the user picks `severity: block` and the rule evaluates content semantically (not just file paths), recommend either `model: "gemma3:12b"` (Ollama, ~2x latency) or `backend: "claude"` with `model: "haiku"` (cloud, higher accuracy) and explain the tradeoff.
 
 ### Step 3: Draft the rule
 

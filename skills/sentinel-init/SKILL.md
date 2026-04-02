@@ -62,19 +62,31 @@ Create `.claude/sentinel/config.yaml` with this content:
 # Sentinel — configuration
 # ─────────────────────────────────────────────────────────────
 
-# Ollama model for rule evaluation.
+# LLM backend for rule evaluation: ollama, claude, or copilot.
+# Per-rule overrides via `backend:` in rule files.
+backend: "ollama"
+
+# Default model (backend-specific).
 # Small models work because each rule is evaluated independently
 # as a binary classification task with constrained JSON output.
 #
-# Recommended (by hardware):
-#   8 GB RAM   → gemma3:4b        (default, ~3 GB at Q4)
-#   16 GB RAM  → gemma3:12b       (best accuracy for block rules)
+# Recommended:
+#   ollama (8 GB RAM)  → gemma3:4b   (default, ~3 GB at Q4)
+#   ollama (16 GB RAM) → gemma3:12b  (best local accuracy for block rules)
+#   claude             → haiku       (fast cloud model)
+#   copilot            → gpt-5-mini  (fast cloud model)
 #
-# Any Ollama-compatible model works. Per-rule overrides via `model:` in rule files.
+# Per-rule overrides via `model:` in rule files.
 model: "gemma3:4b"
 
-# Ollama endpoint
-ollama_url: "http://localhost:11434"
+# Backend-specific settings
+backends:
+  ollama:
+    url: "http://localhost:11434"
+  # claude:
+  #   model: "haiku"
+  # copilot:
+  #   model: "gpt-5-mini"
 
 # Per-rule evaluation timeout (ms). Rules that exceed this are skipped.
 timeout_ms: 5000

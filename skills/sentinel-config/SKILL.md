@@ -22,11 +22,16 @@ View or update the Sentinel configuration in the current repository.
 
 | Key | Default | Description |
 |---|---|---|
-| `model` | `gemma3:4b` | Ollama model for evaluation |
-| `ollama_url` | `http://localhost:11434` | Ollama endpoint |
+| `backend` | `ollama` | LLM backend: `ollama`, `claude`, or `copilot` |
+| `model` | `gemma3:4b` | Default model for evaluation (backend-specific) |
+| `backends.ollama.url` | `http://localhost:11434` | Ollama endpoint |
+| `backends.ollama.model` | *(top-level model)* | Default Ollama model |
+| `backends.claude.model` | `haiku` | Default Claude model |
+| `backends.copilot.model` | `gpt-5-mini` | Default Copilot model |
+| `ollama_url` | `http://localhost:11434` | Ollama endpoint (legacy; prefer `backends.ollama.url`) |
 | `timeout_ms` | `5000` | Per-rule evaluation timeout |
 | `confidence_threshold` | `0.7` | Minimum confidence to count as violation |
-| `max_parallel` | `4` | Concurrent Ollama calls |
+| `max_parallel` | `4` | Concurrent LLM calls |
 | `ollama_concurrency` | `1` | Max concurrent Ollama HTTP calls (GPU-bound) |
 | `think` | `false` | Enable /think mode (slower, more accurate) |
 | `fail_open` | `true` | Skip rule on error vs block |
@@ -37,12 +42,14 @@ View or update the Sentinel configuration in the current repository.
 | `mcp_prefix` | `mcp__` | Prefix for detecting MCP tool names |
 | `mcp_separator` | `__` | Separator for parsing MCP server/tool from tool name |
 | `context.enabled` | `true` | Enable session context accumulator |
-| `context.model` | `gemma3:4b` | Ollama model for accumulator |
+| `context.backend` | *(top-level backend)* | LLM backend for accumulator |
+| `context.model` | `gemma3:4b` | Model for accumulator |
 | `context.min_events` | `3` | Minimum events before accumulator update |
-| `context.lock_timeout_s` | `30` | Max wait for GPU lock |
+| `context.lock_timeout_s` | `30` | Max wait for GPU lock (Ollama only) |
 | `context.summary_max_words` | `150` | Token budget for rolling summary |
 | `scribe.enabled` | `true` | Enable the Scribe convention learning pipeline |
-| `scribe.model` | *(top-level model)* | Default Ollama model for all scribe steps |
+| `scribe.backend` | *(top-level backend)* | LLM backend for scribe |
+| `scribe.model` | *(top-level model)* | Default model for all scribe steps |
 | `scribe.extraction_model` | *(scribe.model)* | Override for extraction (reflect + learn) |
 | `scribe.synthesis_model` | *(scribe.model)* | Override for validation + synthesis |
 | `scribe.guidance` | `null` | Priority guidance text for extraction |
@@ -59,12 +66,16 @@ View or update the Sentinel configuration in the current repository.
 | `scribe.doc_globs` | `[CLAUDE.md, AGENTS.md, ...]` | File patterns for /sentinel-learn |
 | `scribe.notification.max_age_days` | `7` | Max age for draft notifications |
 
-## Model recommendations
+## Backend and model recommendations
 
-| Hardware | Model | Notes |
+| Backend | Model | Notes |
 |---|---|---|
-| 8 GB RAM | `gemma3:4b` | Dense, ~3 GB at Q4 |
-| 16 GB RAM | `gemma3:12b` | Dense, best accuracy for block rules |
+| `ollama` (8 GB RAM) | `gemma3:4b` | Dense, ~3 GB at Q4, local |
+| `ollama` (16 GB RAM) | `gemma3:12b` | Dense, best local accuracy for block rules |
+| `claude` | `haiku` | Fast cloud model, good for most rules |
+| `copilot` | `gpt-5-mini` | Fast cloud model via Copilot CLI |
+
+Backends can be mixed: use Ollama globally for speed, override specific block rules with `backend: claude` for higher accuracy.
 
 ## Next steps
 
