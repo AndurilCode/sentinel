@@ -491,34 +491,15 @@ class TestFormatReport:
         assert "100%" in report
 
 
-# ── 5. Ollama Evaluation (mocked) ────────────────────────────────
-
-
-def _mock_ollama_response(violation, confidence, reason):
-    """Create a mock urllib response with Ollama-style JSON."""
-    body = json.dumps({
-        "message": {
-            "content": json.dumps({
-                "violation": violation,
-                "confidence": confidence,
-                "reason": reason,
-            })
-        }
-    }).encode()
-    resp = MagicMock()
-    resp.read.return_value = body
-    resp.__enter__ = lambda s: s
-    resp.__exit__ = MagicMock(return_value=False)
-    return resp
+# ── 5. LLM Evaluation (mocked via sentinel_backends) ───────────
 
 
 class TestEvaluateRule:
-    def setup_method(self):
-        sentinel._ollama_semaphore = None
+    def _llm_response(self, violation, confidence, reason):
+        return json.dumps({"violation": violation, "confidence": confidence, "reason": reason})
 
     def test_violation_above_threshold(self, block_rule, default_config):
-        mock_resp = _mock_ollama_response(True, 0.9, "secret detected")
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("sentinel.call_llm", return_value=self._llm_response(True, 0.9, "secret detected")):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         assert result is not None
@@ -528,29 +509,27 @@ class TestEvaluateRule:
         assert result["reason"] == "secret detected"
 
     def test_violation_below_threshold(self, block_rule, default_config):
-        mock_resp = _mock_ollama_response(True, 0.3, "maybe")
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("sentinel.call_llm", return_value=self._llm_response(True, 0.3, "maybe")):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         assert result is None
 
     def test_no_violation(self, block_rule, default_config):
-        mock_resp = _mock_ollama_response(False, 0.95, "looks clean")
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("sentinel.call_llm", return_value=self._llm_response(False, 0.95, "looks clean")):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         assert result is None
 
     def test_timeout_fail_open(self, block_rule, default_config):
         default_config["fail_open"] = True
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("timed out")):
+        with patch("sentinel.call_llm", side_effect=ConnectionError("timed out")):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         assert result is None
 
     def test_timeout_fail_closed(self, block_rule, default_config):
         default_config["fail_open"] = False
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("timed out")):
+        with patch("sentinel.call_llm", side_effect=ConnectionError("timed out")):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         assert result is not None
@@ -560,7 +539,7 @@ class TestEvaluateRule:
     def test_offline_fail_open(self, block_rule, default_config):
         default_config["fail_open"] = True
         from urllib.error import URLError
-        with patch("urllib.request.urlopen", side_effect=URLError("connection refused")):
+        with patch("sentinel.call_llm", side_effect=URLError("connection refused")):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         assert result is None
@@ -568,18 +547,14 @@ class TestEvaluateRule:
     def test_offline_fail_closed(self, block_rule, default_config):
         default_config["fail_open"] = False
         from urllib.error import URLError
-        with patch("urllib.request.urlopen", side_effect=URLError("connection refused")):
+        with patch("sentinel.call_llm", side_effect=URLError("connection refused")):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         assert result is not None
         assert result.get("error") is True
 
     def test_malformed_json_response(self, block_rule, default_config):
-        resp = MagicMock()
-        resp.read.return_value = json.dumps({"message": {"content": "not json at all"}}).encode()
-        resp.__enter__ = lambda s: s
-        resp.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=resp):
+        with patch("sentinel.call_llm", return_value="not json at all"):
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             result = sentinel.evaluate_rule(block_rule, event, default_config)
         # fail_open=True by default → None
@@ -587,22 +562,21 @@ class TestEvaluateRule:
 
     def test_per_rule_model_override(self, block_rule, default_config):
         block_rule["model"] = "llama3:8b"
-        mock_resp = _mock_ollama_response(False, 0.9, "ok")
-        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+        with patch("sentinel.call_llm", return_value=self._llm_response(False, 0.9, "ok")) as mock_llm:
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             sentinel.evaluate_rule(block_rule, event, default_config)
-            call_data = json.loads(mock_url.call_args[0][0].data)
-            assert call_data["model"] == "llama3:8b"
+            # call_llm(prompt, system_prompt, model, backend, config, ...)
+            assert mock_llm.call_args[0][2] == "llama3:8b"
 
-    def test_semaphore_used_when_set(self, block_rule, default_config):
-        sentinel._ollama_semaphore = MagicMock()
-        mock_resp = _mock_ollama_response(False, 0.5, "ok")
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+    def test_per_rule_backend_override(self, block_rule, default_config):
+        block_rule["backend"] = "claude"
+        block_rule["model"] = "haiku"
+        with patch("sentinel.call_llm", return_value=self._llm_response(False, 0.9, "ok")) as mock_llm:
             event = {"trigger": "file_write", "template_vars": {"file_path": "x", "content_snippet": "y"}}
             sentinel.evaluate_rule(block_rule, event, default_config)
-        sentinel._ollama_semaphore.acquire.assert_called_once()
-        sentinel._ollama_semaphore.release.assert_called_once()
-        sentinel._ollama_semaphore = None
+            # call_llm(prompt, system_prompt, model, backend, config, ...)
+            assert mock_llm.call_args[0][2] == "haiku"
+            assert mock_llm.call_args[0][3] == "claude"
 
 
 # ── 6. Config and Rule Loading ────────────────────────────────────

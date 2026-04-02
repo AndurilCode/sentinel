@@ -28,6 +28,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from sentinel_backends import call_llm, resolve_backend, backend_reachable, init_ollama_semaphore
+
 
 # Lazy import for draft notifications (only when needed)
 def _check_scribe_drafts(session_id: str, config: dict, config_dir: str) -> Optional[str]:
@@ -458,54 +460,7 @@ def render_prompt(rule: dict, event: dict, config: dict) -> str:
         result = result.replace("{{" + key + "}}", str(val))
     return result
 
-# ── Ollama evaluation ───────────────────────────────────────────────
-
-# Semaphore gates actual Ollama HTTP calls to avoid GPU contention.
-# Initialized in main() based on config["ollama_concurrency"].
-_ollama_semaphore: Optional[threading.Semaphore] = None
-
-
-def _call_ollama(prompt: str, model: str, config: dict) -> str:
-    """Send a chat request to Ollama and return the response content.
-
-    Handles semaphore gating, payload construction, and HTTP transport.
-    Raises on network/timeout errors — caller decides how to handle.
-    """
-    think = config.get("think", False)
-
-    payload = json.dumps({
-        "model":  model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": prompt},
-        ],
-        "format": "json",
-        "stream": False,
-        "think":  think,
-        "options": {
-            "num_predict": 150 if not think else 1000,
-            "temperature": 0.1,
-        },
-    }).encode()
-
-    url = f"{config['ollama_url']}/api/chat"
-    timeout_s = config["timeout_ms"] / 1000
-
-    sem = _ollama_semaphore
-    if sem:
-        sem.acquire()
-    try:
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            body = json.loads(resp.read())
-    finally:
-        if sem:
-            sem.release()
-
-    return body.get("message", {}).get("content", "")
+# ── LLM evaluation ─────────────────────────────────────────────────
 
 
 def _fail(rule: dict, reason: str, config: dict,
@@ -534,11 +489,12 @@ def evaluate_rule(rule: dict, event: dict, config: dict) -> Optional[dict]:
     Returns a violation dict if KO, None if OK.
     """
     prompt = render_prompt(rule, event, config)
-    model = rule.get("model", config["model"])
+    backend, model = resolve_backend(config, rule.get("backend"), rule.get("model"))
     t0 = time.monotonic()
 
     try:
-        content = _call_ollama(prompt, model, config)
+        content = call_llm(prompt, SYSTEM_PROMPT, model, backend, config,
+                           think=config.get("think", False))
     except Exception as e:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         is_timeout = "timed out" in str(e).lower() or "timeout" in type(e).__name__.lower()
@@ -782,15 +738,6 @@ def _dedup_check(session_id: str, rule_id: str, target: str,
 
 # ── Main ────────────────────────────────────────────────────────────
 
-def _ollama_reachable(config: dict) -> bool:
-    """Quick pre-flight: is Ollama responding?"""
-    try:
-        req = urllib.request.Request(f"{config['ollama_url']}/api/tags")
-        urllib.request.urlopen(req, timeout=1)
-        return True
-    except Exception:
-        return False
-
 
 def _find_config_dir() -> Optional[str]:
     """Resolve repo-side config directory.
@@ -820,17 +767,26 @@ def evaluate_info_rule(rule: dict, event: dict, config: dict,
     from sentinel_lock import acquire_lock, release_lock, LockPriority
 
     prompt = render_prompt(rule, event, config)
-    model = rule.get("model", config.get("context", {}).get("model", config["model"]))
+    ctx_config = config.get("context", {})
+    backend, model = resolve_backend(
+        config,
+        override_backend=rule.get("backend", ctx_config.get("backend")),
+        override_model=rule.get("model", ctx_config.get("model")),
+    )
     lock_path = _session_lock_path(session_id, config)
     t0 = time.monotonic()
 
-    fd = acquire_lock(lock_path, LockPriority.P1_SYNTHESIZER, timeout_s=5)
+    fd = None
+    if backend == "ollama":
+        fd = acquire_lock(lock_path, LockPriority.P1_SYNTHESIZER, timeout_s=5)
     try:
-        content = _call_ollama(prompt, model, config)
+        content = call_llm(prompt, "You are a JSON-only responder. Always respond with valid JSON, no other text.",
+                           model, backend, config)
     except Exception:
         return None
     finally:
-        release_lock(fd)
+        if fd is not None:
+            release_lock(fd)
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     _log(config, rule, event, violation=False, confidence=0.0,
@@ -870,26 +826,27 @@ def main_pre(raw_data: dict, rules: list, config: dict):
         rendered = render_prompt(r, event, config)
         info_contexts.append(f"[{r['id']}] {rendered}")
 
-    # Pre-flight: avoid N timeouts per rule when Ollama is not running
+    # Pre-flight: avoid N timeouts per rule when backend is not reachable
     # Only needed if there are judge rules to evaluate
     if judge_rules:
-        if not _ollama_reachable(config):
+        global_backend = config.get("backend", "ollama")
+        if not backend_reachable(global_backend, config):
             if config.get("fail_open", True):
-                _debug("Ollama unreachable, fail_open=true, skipping judge rules", config)
+                _debug(f"{global_backend} unreachable, fail_open=true, skipping judge rules", config)
                 # Still output info context if any
                 if info_contexts:
                     print(format_decision_info("\n\n".join(info_contexts), agent_format))
                 sys.exit(0)
             else:
-                fail_msg = "SENTINEL: Ollama is not reachable (fail_open: false)"
+                fail_msg = f"SENTINEL: {global_backend} is not reachable (fail_open: false)"
                 if info_contexts:
                     fail_msg = "\n\n".join(info_contexts) + "\n\n" + fail_msg
                 print(format_decision(fail_msg, blockers=True, agent_format=agent_format))
                 sys.exit(0)
 
-        # Initialize concurrency gate for Ollama calls
-        global _ollama_semaphore
-        _ollama_semaphore = threading.Semaphore(config.get("ollama_concurrency", 1))
+        # Initialize concurrency gate (Ollama only — GPU contention)
+        if global_backend == "ollama":
+            init_ollama_semaphore(config.get("ollama_concurrency", 1))
 
         # Parallel evaluation (semaphore gates actual Ollama calls)
         violations = []
@@ -934,7 +891,8 @@ def main_post(raw_data: dict, rules: list, config: dict):
     if not matching:
         sys.exit(0)
 
-    if not _ollama_reachable(config):
+    post_backend = config.get("backend", "ollama")
+    if not backend_reachable(post_backend, config):
         sys.exit(0)  # info is advisory, always fail open
 
     session_context = _read_session_context(session_id, config)
