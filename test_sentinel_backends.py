@@ -4,9 +4,12 @@ Tests follow TDD: written before implementation passes.
 """
 import io
 import json
+import subprocess
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import sentinel_backends
 from sentinel_backends import call_llm, resolve_backend
@@ -120,6 +123,101 @@ class TestInitOllamaSemaphore(unittest.TestCase):
         sem.release()
         sem.release()
         sem.release()
+
+
+class TestCallLlmClaude(unittest.TestCase):
+    """Tests for call_llm dispatching to _call_claude."""
+
+    def test_call_llm_claude(self):
+        """Claude backend runs claude CLI with correct args."""
+        mock_result = MagicMock()
+        mock_result.stdout = '{"violation": false, "confidence": 0.8, "reason": "ok"}'
+        mock_result.returncode = 0
+
+        config = {
+            "timeout_ms": 10000,
+            "backends": {"claude": {"model": "haiku"}},
+        }
+
+        with patch("sentinel_backends.subprocess.run", return_value=mock_result) as mock_run:
+            result = call_llm("test prompt", "system prompt", "haiku", "claude", config)
+
+        self.assertIn("violation", result)
+        args = mock_run.call_args
+        cmd = args[0][0]
+        self.assertIn("claude", cmd)
+        self.assertIn("-p", cmd)
+        self.assertIn("--print", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("haiku", cmd)
+        self.assertIn("--system-prompt", cmd)
+        self.assertIn("--no-session-persistence", cmd)
+
+    def test_call_llm_claude_timeout(self):
+        """Claude backend raises on subprocess timeout."""
+        config = {"timeout_ms": 5000, "backends": {}}
+
+        with patch("sentinel_backends.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=5)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                call_llm("prompt", "system", "haiku", "claude", config)
+
+    def test_call_llm_claude_not_found(self):
+        """Claude backend raises when binary not on PATH."""
+        config = {"timeout_ms": 5000, "backends": {}}
+
+        with patch("sentinel_backends.subprocess.run",
+                   side_effect=FileNotFoundError("claude not found")):
+            with self.assertRaises(FileNotFoundError):
+                call_llm("prompt", "system", "haiku", "claude", config)
+
+
+# Pytest-style versions of the same tests (as specified in task)
+
+def test_call_llm_claude():
+    """Claude backend runs claude CLI with correct args."""
+    mock_result = MagicMock()
+    mock_result.stdout = '{"violation": false, "confidence": 0.8, "reason": "ok"}'
+    mock_result.returncode = 0
+
+    config = {
+        "timeout_ms": 10000,
+        "backends": {"claude": {"model": "haiku"}},
+    }
+
+    with patch("sentinel_backends.subprocess.run", return_value=mock_result) as mock_run:
+        result = call_llm("test prompt", "system prompt", "haiku", "claude", config)
+
+    assert "violation" in result
+    args = mock_run.call_args
+    cmd = args[0][0]
+    assert "claude" in cmd
+    assert "-p" in cmd
+    assert "--print" in cmd
+    assert "--model" in cmd
+    assert "haiku" in cmd
+    assert "--system-prompt" in cmd
+    assert "--no-session-persistence" in cmd
+
+
+def test_call_llm_claude_timeout():
+    """Claude backend raises on subprocess timeout."""
+    config = {"timeout_ms": 5000, "backends": {}}
+
+    with patch("sentinel_backends.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=5)):
+        with pytest.raises(subprocess.TimeoutExpired):
+            call_llm("prompt", "system", "haiku", "claude", config)
+
+
+def test_call_llm_claude_not_found():
+    """Claude backend raises when binary not on PATH."""
+    config = {"timeout_ms": 5000, "backends": {}}
+
+    with patch("sentinel_backends.subprocess.run",
+               side_effect=FileNotFoundError("claude not found")):
+        with pytest.raises(FileNotFoundError):
+            call_llm("prompt", "system", "haiku", "claude", config)
 
 
 if __name__ == "__main__":

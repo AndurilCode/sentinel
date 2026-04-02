@@ -10,6 +10,7 @@ Currently supports the "ollama" backend. Claude and Copilot backends will be
 added in subsequent tasks.
 """
 import json
+import subprocess
 import threading
 import urllib.request
 from typing import Optional
@@ -80,7 +81,48 @@ def call_llm(
     """
     if backend == "ollama":
         return _call_ollama(prompt, system_prompt, model, config, **kwargs)
-    raise ValueError(f"Unknown backend: {backend!r}. Supported: 'ollama'")
+    if backend == "claude":
+        return _call_claude(prompt, system_prompt, model, config, **kwargs)
+    raise ValueError(f"Unknown backend: {backend!r}. Supported: 'ollama', 'claude'")
+
+
+# ── Claude CLI backend ────────────────────────────────────────────────────
+
+def _call_claude(
+    prompt: str,
+    system_prompt: str,
+    model: str,
+    config: dict,
+    **kwargs,
+) -> str:
+    """Run claude CLI in print mode and return stdout.
+
+    Args:
+        prompt:        User message.
+        system_prompt: System message.
+        model:         Claude model identifier (e.g. "haiku", "opus").
+        config:        Sentinel config dict.
+        **kwargs:      Optional timeout_ms override.
+
+    Raises:
+        subprocess.TimeoutExpired: If the CLI call exceeds the timeout.
+        FileNotFoundError: If the claude binary is not found on PATH.
+    """
+    timeout_ms = kwargs.get("timeout_ms") or config.get("timeout_ms", 5000)
+    timeout_s = timeout_ms / 1000
+
+    cmd = [
+        "claude", "-p", prompt,
+        "--model", model,
+        "--print",
+        "--system-prompt", system_prompt,
+        "--no-session-persistence",
+    ]
+
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout_s,
+    )
+    return result.stdout
 
 
 # ── Ollama backend ─────────────────────────────────────────────────────────
