@@ -11,6 +11,7 @@ Currently supports the "ollama" backend. Claude and Copilot backends will be
 added in subsequent tasks.
 """
 import json
+import shutil
 import subprocess
 import threading
 import urllib.request
@@ -27,6 +28,31 @@ def init_ollama_semaphore(concurrency: int) -> None:
     """Set the module-level Ollama concurrency semaphore."""
     global _ollama_semaphore
     _ollama_semaphore = threading.Semaphore(concurrency)
+
+
+# ── Backend reachability ───────────────────────────────────────────────────
+
+def backend_reachable(backend: str, config: dict) -> bool:
+    """Quick pre-flight check: can we reach this backend?
+
+    Ollama: HTTP GET /api/tags
+    Claude/Copilot: shutil.which checks binary on PATH
+    """
+    if backend == "ollama":
+        backends_cfg = config.get("backends", {})
+        ollama_cfg = backends_cfg.get("ollama", {})
+        url_base = ollama_cfg.get("url", config.get("ollama_url", "http://localhost:11434"))
+        try:
+            req = urllib.request.Request(f"{url_base}/api/tags")
+            urllib.request.urlopen(req, timeout=1)
+            return True
+        except Exception:
+            return False
+
+    if backend in ("claude", "copilot"):
+        return shutil.which(backend) is not None
+
+    return False
 
 
 # ── Backend resolution ─────────────────────────────────────────────────────

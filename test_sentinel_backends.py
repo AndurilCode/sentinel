@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import sentinel_backends
-from sentinel_backends import call_llm, resolve_backend
+from sentinel_backends import backend_reachable, call_llm, resolve_backend
 
 
 class TestResolveBackend(unittest.TestCase):
@@ -208,6 +208,42 @@ class TestCallLlmCopilot(unittest.TestCase):
         combined_prompt = cmd[p_idx + 1]
         self.assertIn("system instructions", combined_prompt)
         self.assertIn("user prompt", combined_prompt)
+
+
+class TestBackendReachable(unittest.TestCase):
+    def test_ollama_up(self):
+        """Ollama reachable when HTTP endpoint responds."""
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        config = {"backends": {"ollama": {"url": "http://localhost:11434"}}}
+        with patch("sentinel_backends.urllib.request.urlopen", return_value=mock_resp):
+            self.assertTrue(backend_reachable("ollama", config))
+
+    def test_ollama_down(self):
+        """Ollama unreachable when HTTP fails."""
+        config = {"backends": {"ollama": {"url": "http://localhost:11434"}}}
+        with patch("sentinel_backends.urllib.request.urlopen", side_effect=ConnectionError):
+            self.assertFalse(backend_reachable("ollama", config))
+
+    def test_claude_found(self):
+        """Claude reachable when binary exists on PATH."""
+        config = {"backends": {}}
+        with patch("sentinel_backends.shutil.which", return_value="/usr/local/bin/claude"):
+            self.assertTrue(backend_reachable("claude", config))
+
+    def test_claude_missing(self):
+        """Claude unreachable when binary not on PATH."""
+        config = {"backends": {}}
+        with patch("sentinel_backends.shutil.which", return_value=None):
+            self.assertFalse(backend_reachable("claude", config))
+
+    def test_copilot_found(self):
+        """Copilot reachable when binary exists on PATH."""
+        config = {"backends": {}}
+        with patch("sentinel_backends.shutil.which", return_value="/usr/local/bin/copilot"):
+            self.assertTrue(backend_reachable("copilot", config))
 
 
 if __name__ == "__main__":
