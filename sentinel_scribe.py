@@ -327,7 +327,7 @@ def build_doc_extraction_prompt(content: str, source_type: str,
 
 
 TRANSCRIPT_EXTRACTION_PROMPT = """You are observing a completed coding session between a developer and a coding agent.
-Your job: extract any PERMANENT conventions the agent should follow in ALL future sessions.
+Your job: extract PERMANENT conventions that apply to ALL future sessions in this repository.
 
 {summary_block}
 SESSION TRANSCRIPT:
@@ -335,27 +335,63 @@ SESSION TRANSCRIPT:
 {guidance_block}
 Look for TWO types of signals:
 
-1. HUMAN-EXPRESSED RULES — the developer states a permanent convention:
-   - "never modify billing directly" — boundary (permanent)
-   - "always run tests before pushing" — process (permanent)
-   - Language: "never", "always", "from now on", "in this repo we...", "the rule is..."
+1. HUMAN-EXPRESSED RULES — the developer explicitly states a permanent convention:
+  - "never modify billing directly" — boundary (permanent)
+  - "always run tests before pushing" — process (permanent)
+  - Language: "never", "always", "from now on", "in this repo we...", "the rule is..."
+  - The developer must be stating a GENERAL RULE, not a task-specific instruction
 
-2. AGENT SELF-CORRECTIONS — the agent made a mistake and corrected itself:
-   - Tool error → agent adjusts approach (implies a convention about correct usage)
-   - Write/edit → revise same file (implies the first approach was wrong)
-   - Test failure → code fix (implies a convention about correct implementation)
-   - The correction pattern itself reveals what the convention should be
+2. REPEATED AGENT ERRORS — the agent hits the SAME kind of error 2+ times in the session (also treat agent self-corrections as a signal and label responses with "source": "agent_self_correction"):
+   - Same tool fails repeatedly with a similar error (indicates a repo-specific trap)
+   - Agent tries the same wrong approach multiple times before finding the right one
+   - The convention should describe the CORRECT approach any future agent should use
+   - Ignore transient bug fixes fixed on first retry — those are normal work
 
-MOST sessions yield ZERO conventions. Return empty unless very confident.
+MOST sessions yield ZERO conventions. Default to empty.
 
 RETURN EMPTY for:
 - Normal task execution (writing code, reading files, running commands)
-- One-off debugging that doesn't imply a general rule
+- One-off debugging or task-specific decisions
 - Agent exploring/learning about the codebase
-- Successful first attempts (no correction needed = no convention to learn)
+- Implementation details of the current task (e.g. "use adapter pattern", "bump version")
+- Architectural decisions for a specific feature being built
+- Agent transient self-corrections that are clearly about the current task
+- Config changes, timeout tuning, or parameter adjustments that are operational-only
+- Anything that describes WHAT was built rather than HOW to work in this repo going forward
 
-If no conventions: {{"conventions": []}}
-If found: {{"conventions": [{{"statement": "...", "scope_hint": "file glob like src/billing/** or ** for all files", "trigger_hint": "file_write|bash|mcp|unknown", "confidence": 0.0-1.0, "evidence": "exact transcript excerpt showing the signal", "source": "user_feedback|agent_self_correction"}}]}}"""
+A convention is a rule that a NEW agent starting a NEW session should know.
+Ask: "Would this matter to someone who knows nothing about today's task?"
+If no → return empty.
+
+Signals may include a "source" field in extracted convention objects. Common values:
+- "user_feedback" — the human explicitly stated the rule
+- "agent_self_correction" — the agent corrected itself and described the convention
+- "heuristic" — the model inferred a likely convention from repeated patterns
+
+SPECIAL INSTRUCTION: If rule format, configuration keys, template variables, or severity values were mentioned or implied and differ from the repository's current sentinel.py schema, list which skill files need updating so docs and skills stay in sync.
+The skill files to check/update are:
+- skills/sentinel-rule/SKILL.md
+- skills/sentinel-config/SKILL.md
+- skills/sentinel-init/SKILL.md
+- docs/reference.md
+
+RESPONSE FORMAT: Always respond with valid JSON only. If no conventions are found, respond with:
+{{"conventions": [], "skills_to_update": []}}
+
+If conventions are found, respond with this JSON structure ONLY:
+{{"conventions": [{{"statement": "...", "scope_hint": "file glob like src/billing/** or ** for all files", "trigger_hint": "file_write|bash|mcp|unknown", "confidence": 0.0-1.0, "evidence": "exact transcript excerpt showing the signal"}}], "skills_to_update": ["skills/sentinel-rule/SKILL.md", "skills/sentinel-config/SKILL.md"]}}
+
+Notes:
+- "skills_to_update" must list the subset of the four skill files above that need changes (include relative paths).
+- Keep all strings concise. Evidence should be an exact transcript snippet (one or two lines).
+- The JSON must be the only content in the model's output; do not wrap in markdown or any extra text.
+
+Example (no conventions found):
+{{"conventions": [], "skills_to_update": []}}
+
+Example (one convention):
+{{"conventions": [{{"statement": "Always include severity in new rules.", "scope_hint": "**", "trigger_hint": "file_write", "confidence": 0.9, "evidence": "From now on, every rule must include severity: block or warn"}}], "skills_to_update": ["skills/sentinel-rule/SKILL.md", "docs/reference.md"]}}
+"""
 
 
 def build_transcript_extraction_prompt(transcript_text: str,

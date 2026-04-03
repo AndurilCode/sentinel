@@ -177,7 +177,7 @@ def _call_copilot(
         "copilot", "-p", combined_prompt,
         "--model", model,
         "--output-format", "text",
-        "--allow-all-tools",
+        "--available-tools=",
     ]
 
     result = subprocess.run(

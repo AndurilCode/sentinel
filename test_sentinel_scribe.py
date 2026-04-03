@@ -416,7 +416,7 @@ def test_build_transcript_extraction_prompt():
     assert "never use eval" in prompt
     assert "Building auth" in prompt
     assert "agent_self_correction" in prompt
-    assert "user_feedback" in prompt
+    assert "HUMAN-EXPRESSED RULES" in prompt
 
 
 def test_build_transcript_extraction_prompt_no_summary():
