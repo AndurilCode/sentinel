@@ -363,6 +363,11 @@ A convention is a rule that a NEW agent starting a NEW session should know.
 Ask: "Would this matter to someone who knows nothing about today's task?"
 If no → return empty.
 
+Sentinel rules are RUNTIME rules — they evaluate agent ACTIONS (file writes, bash
+commands, MCP calls) at the moment they happen. They are NOT code review rules.
+RETURN EMPTY for conventions that are about code quality, implementation patterns,
+or how code should be written. Those belong in tests or code review, not Sentinel.
+
 Signals may include a "source" field in extracted convention objects. Common values:
 - "user_feedback" — the human explicitly stated the rule
 - "agent_self_correction" — the agent corrected itself and described the convention
