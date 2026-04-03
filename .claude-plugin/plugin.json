@@ -1,6 +1,6 @@
 {
   "name": "sentinel",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "LLM rule evaluator — gates agent actions against repo-defined rules using Ollama, Claude, or Copilot",
   "author": {
     "name": "gpavanello"

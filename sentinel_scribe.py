@@ -163,12 +163,41 @@ def _session_dir(session_id: str, config_dir: str) -> str:
 
 # ── Observation store ───────────────────────────────────────────────
 
-def append_observation(scribe_dir: str, observation: dict) -> None:
-    """Append an observation to the JSONL store."""
+def _normalize_statement(s: str) -> str:
+    """Normalize a convention statement for dedup comparison."""
+    return re.sub(r'\s+', ' ', s.lower().strip())
+
+
+def _load_existing_statements(scribe_dir: str) -> set[str]:
+    """Load normalized statements from existing observations."""
+    path = os.path.join(scribe_dir, "observations.jsonl")
+    statements = set()
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    obs = json.loads(line)
+                    stmt = obs.get("statement", "")
+                    if stmt:
+                        statements.add(_normalize_statement(stmt))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return statements
+
+
+def append_observation(scribe_dir: str, observation: dict) -> bool:
+    """Append an observation to the JSONL store. Returns False if duplicate."""
     os.makedirs(scribe_dir, exist_ok=True)
+    existing = _load_existing_statements(scribe_dir)
+    normalized = _normalize_statement(observation.get("statement", ""))
+    if normalized in existing:
+        return False
     path = os.path.join(scribe_dir, "observations.jsonl")
     with open(path, "a") as f:
         f.write(json.dumps(observation) + "\n")
+    return True
 
 
 # ── Dismissed blocklist ─────────────────────────────────────────────
@@ -843,7 +872,8 @@ def reflect(transcript_path: str, session_id: str,
             "evidence": conv.get("evidence", ""),
             "drafted": False,
         }
-        append_observation(scribe_dir, observation)
+        if not append_observation(scribe_dir, observation):
+            continue  # duplicate observation, skip validation
 
         # Phase 2A: Structural dedup
         if is_dismissed(scribe_dir, conv.get("scope_hint", "**"),
@@ -1055,7 +1085,8 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
                     "evidence": conv.get("evidence", ""),
                     "drafted": False,
                 }
-                append_observation(scribe_dir, observation)
+                if not append_observation(scribe_dir, observation):
+                    continue  # duplicate observation, skip validation
 
                 if confidence < draft_confidence:
                     continue
