@@ -290,9 +290,11 @@ def read_compacted_transcript(transcript_path: str,
     if len(full_text) <= budget_chars:
         return full_text
 
-    # Truncate: keep 40% head + 60% tail
-    head_budget = int(budget_chars * 0.4)
-    tail_budget = budget_chars - head_budget
+    # Truncate: 30% head + 30% middle (errors/corrections) + 40% tail
+    head_budget = int(budget_chars * 0.30)
+    mid_budget = int(budget_chars * 0.30)
+    tail_budget = budget_chars - head_budget - mid_budget
+
     head_lines = []
     head_len = 0
     for ln in lines:
@@ -309,21 +311,70 @@ def read_compacted_transcript(transcript_path: str,
         tail_lines.insert(0, ln)
         tail_len += len(ln) + 1
 
-    skipped = len(lines) - len(head_lines) - len(tail_lines)
-    marker = f"...[{skipped} events truncated]..."
-    return "\n".join(head_lines + [marker] + tail_lines)
+    # Middle section: prioritize lines with error/correction signals
+    head_count = len(head_lines)
+    tail_start = len(lines) - len(tail_lines)
+    middle_lines = lines[head_count:tail_start]
+
+    _ERROR_SIGNALS = ("ERROR", "error", "fail", "never", "always", "wrong",
+                      "don't", "stop", "from now on", "should not", "must not")
+    signal_lines = [ln for ln in middle_lines
+                    if any(sig in ln for sig in _ERROR_SIGNALS)]
+    # Fill remaining budget with signal lines, then context around them
+    mid_selected = []
+    mid_len = 0
+    for ln in signal_lines:
+        if mid_len + len(ln) + 1 > mid_budget:
+            break
+        mid_selected.append(ln)
+        mid_len += len(ln) + 1
+
+    mid_skipped = len(middle_lines) - len(mid_selected)
+    if mid_selected:
+        result_lines = (head_lines
+                        + [f"...[{mid_skipped} middle events truncated, showing errors/corrections]..."]
+                        + mid_selected
+                        + ["...[continuing to end of session]..."]
+                        + tail_lines)
+    else:
+        result_lines = (head_lines
+                        + [f"...[{mid_skipped} events truncated]..."]
+                        + tail_lines)
+    return "\n".join(result_lines)
 
 
 # ── Extraction prompts ──────────────────────────────────────────────
 
 DOC_EXTRACTION_PROMPT = """You are reading a human artifact from a software repository.
-Extract any conventions, constraints, or rules being expressed.
+Extract conventions that can be enforced as RUNTIME RULES on agent actions.
 
 Source type: {source_type}
 Content: {content}
 {guidance_block}
-A convention is: a statement about what SHOULD or SHOULD NOT happen
-in this codebase, expressed by a human with authority.
+A Sentinel convention is: a statement about what an agent SHOULD or SHOULD NOT DO,
+expressed by a human with authority, that can be detected at the moment an action
+happens (file write, bash command, or MCP tool call).
+
+EXTRACT conventions about:
+- Files/directories that should not be modified (file_write)
+- Commands that should not be run or require caution (bash)
+- MCP tools that should be restricted (mcp)
+- Processes that must happen before/after certain actions (bash, file_write)
+- Boundaries between modules or ownership zones (file_write)
+
+DO NOT extract:
+- Code style preferences (naming, formatting, patterns) — these belong in linters
+- Architectural decisions (use adapter pattern, prefer composition) — code review
+- Implementation guidance (how to structure a feature) — not runtime-detectable
+- Team processes that don't map to a specific agent action
+- Descriptions of HOW A TOOL WORKS INTERNALLY — if the document explains the tool's
+  own architecture, hook lifecycle, evaluation pipeline, or configuration schema,
+  those are implementation details, NOT conventions for the agent to follow.
+  Example: "Sentinel runs as a PreToolUse hook" describes how Sentinel works,
+  it is NOT a rule for the coding agent.
+- Prerequisites or setup instructions (install X, pull model Y) — not runtime rules
+- Examples or templates shown as reference — these illustrate what is possible,
+  they are not conventions to enforce
 
 If no convention: {{"conventions": []}}
 If found: {{"conventions": [{{"statement": "...", "scope_hint": "...", "trigger_hint": "file_write|bash|mcp|unknown", "confidence": 0.0-1.0, "evidence": "exact phrase that expresses this"}}]}}"""
@@ -553,9 +604,9 @@ def write_draft(drafts_dir: str, rule: dict, draft_meta: dict) -> str:
 # ── Synthesis ───────────────────────────────────────────────────────
 
 SYNTHESIS_PROMPT = """You are generating a Sentinel rule YAML file. Sentinel evaluates coding agent
-actions against repository-defined rules using a local LLM.
+actions against repository-defined rules using a local LLM at the moment they happen.
 
-A developer expressed this convention:
+CONVENTION TO ENCODE:
 Statement: {statement}
 Evidence: "{evidence}"
 Scope hint (free text, NOT a file path): {scope_hint}
@@ -564,26 +615,97 @@ Trigger hint: {trigger_hint}
 ACTUAL files in the repository that relate to this convention:
 {matched_files}
 
-IMPORTANT: The "scope" field MUST use glob patterns that match REAL paths from the
-file list above. Do NOT invent paths. If the files above are under "src/billing/",
-use "src/billing/**". If no files were found, use a broad pattern like "**".
+IMPORTANT: The "scope" field MUST use glob patterns that match REAL source code paths
+from the file list above. Do NOT invent paths. If the files above are under
+"src/billing/", use "src/billing/**". If no files were found, use a broad pattern
+like "**".
+
+SCOPE MUST target source code, NOT documentation or examples. Never scope to:
+- examples/*.yaml, docs/**/*.md, README.md, *.spec.*, ADR*, CLAUDE.md
+- Files that describe the tool rather than application code
+If the only matched files are docs/examples, use "**" or a source code glob instead.
 
 Existing rules for style reference:
 {sample_rules}
 
-Generate a complete rule YAML with these fields:
-- id: kebab-case identifier
-- trigger: one of file_write, bash, mcp, or any (pick the single most appropriate)
-- severity: block or warn (choose based on how critical the convention is)
-- scope: list of glob patterns derived from the ACTUAL file paths above
-- exclude: list of glob patterns for exceptions (e.g., test files). Omit if none.
-- prompt: the evaluation prompt using {{{{template_vars}}}} for the chosen trigger:
-  - file_write trigger: use {{{{file_path}}}}, {{{{content_snippet}}}}
-  - bash trigger: use {{{{command}}}}
-  - mcp trigger: use {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}}
+─── WHAT MAKES A GOOD SENTINEL RULE ───
 
-The prompt must end with:
+Sentinel rules are RUNTIME guards — they evaluate agent ACTIONS (file writes, shell
+commands, MCP calls) at the moment they happen. They are NOT code review. Do not
+write rules about code style, naming, patterns, or architecture.
+
+DESIGN PRINCIPLES:
+1. Scope does the heavy lifting. A narrow scope with a simple prompt beats a broad
+   scope with a complex prompt. If the scope already identifies the violation (e.g.,
+   writing to a protected directory), the prompt just confirms.
+2. The prompt is evaluated by a SMALL local LLM (4b-12b parameters). Write prompts
+   that are literal, direct, and unambiguous. No subtlety or nuance.
+3. Ask ONE clear yes/no question. Don't ask the LLM to reason about trade-offs.
+
+SEVERITY GUIDE:
+- block: would cause harm if allowed (data loss, secrets leaked, protected boundary violated)
+- warn: agent should know but can proceed (destructive git ops, broad file changes)
+- info: contextual reminder after an action completes — use with "post: true".
+  Good for "remember to also update X when you change Y" conventions.
+
+TRIGGER SELECTION:
+- Convention about files/directories being written → trigger: file_write
+  Template vars: {{{{file_path}}}}, {{{{content_snippet}}}}, {{{{content_length}}}}
+- Convention about shell commands → trigger: bash
+  Template vars: {{{{command}}}}
+- Convention about MCP tool calls → trigger: mcp
+  Template vars: {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}}
+- Convention is a reminder after any action → trigger: file_write or bash (whichever
+  fits), severity: info, post: true
+  Additional vars: {{{{tool_output}}}}, {{{{session_context}}}}
+
+─── EXAMPLES OF GOOD RULES ───
+
+Example 1 — block rule with narrow scope:
+  id: env-file-protection
+  trigger: file_write
+  severity: block
+  scope: ["**/.env", "**/.env.local", "**/.env.production"]
+  exclude: ["**/.env.example"]
+  prompt: |
+    A coding agent is writing to: {{{{file_path}}}}
+    CONTENT PREVIEW: {{{{content_snippet}}}}
+    RULE: .env files must not contain real secret values.
+    Does this file contain real secrets (not placeholders)?
+    Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+
+Example 2 — warn rule for dangerous commands:
+  id: dangerous-git-guard
+  trigger: bash
+  severity: warn
+  scope: ["git push --force*", "git reset --hard*", "git clean -f*"]
+  prompt: |
+    COMMAND: {{{{command}}}}
+    RULE: Destructive git commands can cause irreversible data loss.
+    Is this a destructive git command?
+    Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+
+Example 3 — info reminder after action:
+  id: migration-awareness
+  trigger: file_write
+  severity: info
+  post: true
+  scope: ["**/migrations/**"]
+  prompt: |
+    DOMAIN KNOWLEDGE: API schema and CHANGELOG must reflect DB changes.
+    SESSION CONTEXT: {{{{session_context}}}}
+    FILE: {{{{file_path}}}}
+    RESULT: {{{{tool_output}}}}
+    Provide a brief reminder of what else may need updating.
+    Respond with JSON: {{"context": "your message (max 80 words)"}}
+
+─── GENERATE THE RULE ───
+
+Generate a complete rule YAML. For info severity rules, add "post: true".
+For block/warn rules, end the prompt with:
 Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+For info rules, end the prompt with:
+Respond with JSON: {{"context": "your message (max 80 words)"}}
 
 Return ONLY valid YAML, no other text."""
 
@@ -625,7 +747,8 @@ def parse_synthesis_response(response: str) -> Optional[dict]:
 # ── Validation + Synthesis ───────────────────────────────────────────
 
 VALIDATION_SYNTHESIS_PROMPT = """You are validating a convention extracted from a coding session and deciding if it
-should become a new Sentinel rule.
+should become a new Sentinel rule. Sentinel evaluates agent ACTIONS at runtime using
+a small local LLM — it is NOT code review.
 
 EXTRACTED CONVENTION:
 Statement: {statement}
@@ -648,21 +771,60 @@ TASK:
 If REDUNDANT, return ONLY this JSON:
 {{"redundant": true, "reason": "explanation of which rule covers this"}}
 
-If NOT redundant, return ONLY valid YAML for a new rule with these fields:
-- id: kebab-case identifier
-- trigger: one of file_write, bash, mcp, or any
-- severity: block or warn
-- scope: list of glob patterns derived from the ACTUAL file paths above
-- exclude: list of glob patterns for exceptions (omit if none)
-- prompt: the evaluation prompt using {{{{template_vars}}}} for the chosen trigger:
-  - file_write trigger: use {{{{file_path}}}}, {{{{content_snippet}}}}
-  - bash trigger: use {{{{command}}}}
-  - mcp trigger: use {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}}
+If NOT redundant, generate a rule following these principles:
 
-The prompt must end with:
+DESIGN PRINCIPLES:
+- Scope does the heavy lifting. Narrow scope + simple prompt > broad scope + complex prompt.
+- The prompt is evaluated by a small LLM (4b-12b). Be literal, direct, unambiguous.
+- Ask ONE clear yes/no question in block/warn rules.
+
+SEVERITY:
+- block: would cause harm (data loss, secrets, boundary violation)
+- warn: agent should know but can proceed
+- info: contextual reminder after action — add "post: true"
+
+TRIGGER SELECTION:
+- Files/directories → trigger: file_write, vars: {{{{file_path}}}}, {{{{content_snippet}}}}
+- Shell commands → trigger: bash, vars: {{{{command}}}}
+- MCP tools → trigger: mcp, vars: {{{{server_name}}}}, {{{{mcp_tool}}}}, {{{{mcp_arguments}}}}
+- Reminders → severity: info, post: true, additional vars: {{{{tool_output}}}}, {{{{session_context}}}}
+
+EXAMPLE — well-structured block rule:
+  id: env-file-protection
+  trigger: file_write
+  severity: block
+  scope: ["**/.env", "**/.env.local"]
+  exclude: ["**/.env.example"]
+  prompt: |
+    A coding agent is writing to: {{{{file_path}}}}
+    CONTENT PREVIEW: {{{{content_snippet}}}}
+    RULE: .env files must not contain real secret values.
+    Does this file contain real secrets?
+    Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+
+EXAMPLE — info reminder rule:
+  id: migration-awareness
+  trigger: file_write
+  severity: info
+  post: true
+  scope: ["**/migrations/**"]
+  prompt: |
+    DOMAIN KNOWLEDGE: API schema and CHANGELOG must reflect DB changes.
+    SESSION CONTEXT: {{{{session_context}}}}
+    FILE: {{{{file_path}}}}
+    RESULT: {{{{tool_output}}}}
+    Provide a brief reminder of what else may need updating.
+    Respond with JSON: {{"context": "your message (max 80 words)"}}
+
+For block/warn, end prompt with:
 Respond ONLY with JSON: {{"violation": true/false, "confidence": 0.0-1.0, "reason": "one line"}}
+For info, end prompt with:
+Respond with JSON: {{"context": "your message (max 80 words)"}}
 
-Return ONLY the JSON or YAML, no other text."""
+Scope MUST use glob patterns matching REAL source code paths from the file list above.
+Never scope to docs, examples, READMEs, or spec files — scope to actual source code.
+If only doc/example files matched, use "**" or a source code glob instead.
+Return ONLY the JSON (if redundant) or YAML (if new rule), no other text."""
 
 
 def build_validation_prompt(observation: dict, existing_rules: list[dict],
