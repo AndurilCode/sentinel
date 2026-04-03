@@ -62,8 +62,8 @@ rules_dir: "rules"
 # the transcript. Used by PostToolUse info rules with post: true.
 context:
   enabled: true
-  backend: "copilot"
-  model: "gpt-5-mini"
+  backend: "ollama"
+  model: "gemma3:4b"
   min_events: 3
   lock_timeout_s: 30
   summary_max_words: 150
