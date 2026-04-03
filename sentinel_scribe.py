@@ -568,7 +568,7 @@ Trigger hint: {trigger_hint}
 ACTUAL files in the repository matching this convention:
 {matched_files}
 
-EXISTING ACTIVE RULES in this repository:
+EXISTING RULES AND PENDING DRAFTS in this repository:
 {existing_rules}
 
 TASK:
@@ -782,6 +782,9 @@ def reflect(transcript_path: str, session_id: str,
     drafts_dir = config.get("drafts_dir", os.path.join(config_dir, "drafts"))
     project_root = os.path.dirname(os.path.dirname(config_dir))
     active_rules = load_active_rules(rules_dir)
+    # Include existing drafts so the LLM doesn't re-propose the same concept
+    draft_rules = load_active_rules(drafts_dir)
+    all_known_rules = active_rules + draft_rules
 
     for conv in conventions:
         confidence = conv.get("confidence", 0.0)
@@ -821,7 +824,7 @@ def reflect(transcript_path: str, session_id: str,
 
         t1 = time.time()
         try:
-            val_prompt = build_validation_prompt(conv, active_rules, matched_files)
+            val_prompt = build_validation_prompt(conv, all_known_rules, matched_files)
             val_response = call_llm(
                 val_prompt,
                 "You are a YAML-only responder. Always respond with valid YAML, no other text.",
@@ -1023,7 +1026,9 @@ def learn(config: dict, config_dir: str, scribe_dir: str,
 
                 matched_files = _glob_repo_files(scope_hint, project_root)
                 active_rules = load_active_rules(rules_dir)
-                sample_rules = active_rules[:3]
+                draft_rules = load_active_rules(drafts_dir)
+                all_known_rules = active_rules + draft_rules
+                sample_rules = all_known_rules[:3]
 
                 fd2 = None
                 if backend == "ollama":

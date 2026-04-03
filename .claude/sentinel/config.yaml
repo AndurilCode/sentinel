@@ -82,9 +82,7 @@ scribe:
   backend: "copilot"
   extraction_model: "gpt-5-mini"   # override for extraction (reflect + learn)
   synthesis_model: "gpt-5-mini"    # override for validation+synthesis
-  # extraction_timeout_ms: 15000   # timeout for extraction LLM calls
-  # extraction_num_predict: 1000   # max output tokens for extraction
-  # synthesis_timeout_ms: 15000    # timeout for validation+synthesis LLM calls
-  # synthesis_num_predict: 1000    # max output tokens for validation+synthesis
+  extraction_timeout_ms: 60000    # higher for cloud backends
+  synthesis_timeout_ms: 60000     # higher for cloud backends
   # temperature: 0.1               # LLM temperature for all scribe calls
   # transcript_budget_chars: 4000  # max compacted transcript size before truncation
