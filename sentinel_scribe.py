@@ -19,7 +19,6 @@ import json
 import re
 import time
 import hashlib
-import urllib.request
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path

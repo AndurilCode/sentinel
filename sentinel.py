@@ -22,8 +22,6 @@ import json
 import fnmatch
 import re
 import time
-import urllib.request
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
